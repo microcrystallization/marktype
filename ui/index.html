@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MarkType</title>
+  <link rel="stylesheet" href="http://marktype.localhost/syntax.css" />
+  <link rel="stylesheet" href="http://marktype.localhost/katex/katex.min.css" />
+  <link rel="stylesheet" href="http://marktype.localhost/styles.css" />
+</head>
+<body class="dark">
+  <!-- Invisible 8-direction Frameless Window Resize Handles -->
+  <div class="resize-handle n" data-resize="n"></div>
+  <div class="resize-handle s" data-resize="s"></div>
+  <div class="resize-handle e" data-resize="e"></div>
+  <div class="resize-handle w" data-resize="w"></div>
+  <div class="resize-handle ne" data-resize="ne"></div>
+  <div class="resize-handle nw" data-resize="nw"></div>
+  <div class="resize-handle se" data-resize="se"></div>
+  <div class="resize-handle sw" data-resize="sw"></div>
+
+  <!-- Full-window Wallpaper Backdrop Layer (Kite crossfade + frosted glass) -->
+  <div id="wp-backdrop" class="wp-backdrop" aria-hidden="true">
+    <img id="wp-blur-prev" class="wp-layer" alt="" />
+    <img id="wp-blur-curr" class="wp-layer" alt="" />
+  </div>
+
+  <!-- App Shell -->
+  <div id="app" class="app-shell">
+    <!-- Seamless Integrated Titlebar / Tabs / Mode Switcher / Window Controls -->
+    <header id="topbar" class="topbar">
+      <div class="topbar-left">
+        <div class="brand-mark" title="MarkType">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 14.5V5.5L8 10.5L12.5 5.5V14.5"/><path d="M15.5 6.5V14.5M13.5 12L15.5 14.5L17.5 12"/></svg>
+        </div>
+      </div>
+
+      <div id="tab-bar" class="tab-bar" role="tablist"></div>
+
+      <div class="topbar-right">
+        <div class="mode-switch" role="group" aria-label="View Mode">
+          <button class="mode-btn" data-mode="split" data-i18n="modeSplit">Split</button>
+          <button class="mode-btn" data-mode="live" data-i18n="modeLive">Live</button>
+          <button class="mode-btn" data-mode="source" data-i18n="modeSource">Source</button>
+        </div>
+        <!-- Seamless Custom Window Controls -->
+        <span class="win-ctrl-sep"></span>
+        <div class="win-controls">
+          <button id="win-min" class="win-btn" data-i18n-title="winMin" aria-label="Minimize">
+            <svg viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button id="win-max" class="win-btn" data-i18n-title="winMax" aria-label="Maximize">
+            <svg id="win-max-icon" viewBox="0 0 12 12"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+          <button id="win-close" class="win-btn win-close" data-i18n-title="winClose" aria-label="Close">
+            <svg viewBox="0 0 12 12"><path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <nav id="app-menu" class="app-menu" aria-label="MarkType">
+      <details>
+        <summary data-i18n="menuFile">File</summary>
+        <div class="menu-popover">
+          <button id="btn-new"><span data-i18n="menuNew">New</span><kbd>Ctrl+N</kbd></button>
+          <button id="btn-open"><span data-i18n="menuOpen">Open…</span><kbd>Ctrl+O</kbd></button>
+          <button id="menu-open-folder" data-i18n="openFolderBtn">Open Folder</button>
+          <hr />
+          <button id="btn-save"><span data-i18n="menuSave">Save</span><kbd>Ctrl+S</kbd></button>
+          <button id="btn-save-as"><span data-i18n="menuSaveAs">Save As…</span><kbd>Ctrl+Shift+S</kbd></button>
+          <button id="btn-export" data-i18n="exportHtml">Export HTML</button>
+          <hr />
+          <button id="menu-close-tab" data-i18n="menuCloseTab">Close Tab</button>
+          <button id="menu-exit" data-i18n="menuExit">Exit</button>
+        </div>
+      </details>
+      <details>
+        <summary data-i18n="menuEdit">Edit</summary>
+        <div class="menu-popover">
+          <button id="menu-find"><span data-i18n="findBtn">Find</span><kbd>Ctrl+F</kbd></button>
+          <button id="menu-replace"><span data-i18n="menuReplace">Find and Replace</span><kbd>Ctrl+H</kbd></button>
+        </div>
+      </details>
+      <details>
+        <summary data-i18n="menuView">View</summary>
+        <div class="menu-popover">
+          <button class="mode-btn" data-mode="split" data-i18n="modeSplit">Split</button>
+          <button class="mode-btn" data-mode="live" data-i18n="modeLive">Live</button>
+          <button class="mode-btn" data-mode="source" data-i18n="modeSource">Source</button>
+          <hr />
+          <button id="btn-sidebar"><span data-i18n="menuSidebar">Sidebar</span><kbd>Ctrl+Shift+L</kbd></button>
+        </div>
+      </details>
+      <button id="btn-print" data-i18n="menuPrint" data-i18n-title="printPdf">Print</button>
+      <button id="btn-settings" data-i18n="settingsBack" data-i18n-title="settingsTitle" aria-expanded="false" aria-controls="settings-view">Settings</button>
+    </nav>
+
+    <!-- Main Body (Sidebar + Workspace) -->
+    <div class="main-body">
+      <!-- Left Sidebar: Outline + Files -->
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-tabs">
+            <button class="sidebar-tab active" data-tab="outline" data-i18n="tabOutline">Outline</button>
+            <button class="sidebar-tab" data-tab="files" data-i18n="tabFiles">Files</button>
+          </div>
+          <div id="files-actions" class="sidebar-actions hidden">
+            <button id="btn-open-folder" class="mini-btn" data-i18n="btnFolder">Folder</button>
+            <button id="btn-new-file" class="mini-btn" data-i18n-title="btnNewFile">+</button>
+          </div>
+        </div>
+        <div id="sidebar-outline" class="sidebar-pane">
+          <div id="outline-list" class="outline-list"></div>
+        </div>
+        <div id="sidebar-files" class="sidebar-pane hidden">
+          <div class="file-search-wrap">
+            <input id="file-filter" class="file-filter" type="text" data-i18n-placeholder="filterFiles" />
+          </div>
+          <div id="new-file-inline" class="new-file-inline hidden">
+            <input id="new-file-input" type="text" placeholder="notes.md" />
+            <button id="new-file-confirm" class="mini-btn accent" data-i18n="createBtn">Create</button>
+          </div>
+          <div id="file-tree" class="file-tree"></div>
+        </div>
+      </aside>
+
+      <!-- Workspace Area -->
+      <main id="workspace" class="workspace">
+        <!-- Empty View: Kite-Style Sharp Full-Bleed Wallpaper Hero -->
+        <section id="empty-view" class="empty-view hidden">
+          <div class="hero-media">
+            <img id="hero-prev" class="wp-layer" alt="" />
+            <img id="hero-curr" class="wp-layer" alt="" />
+          </div>
+          <div class="hero-content">
+            <div class="hero-badge" data-i18n="heroBadge">MarkType · Markdown &amp; LaTeX Studio</div>
+            <div class="hero-card">
+              <button class="hero-action" id="hero-new">
+                <span class="hero-key">Ctrl+N</span>
+                <span data-i18n="heroNew">New Document</span>
+              </button>
+              <button class="hero-action" id="hero-open">
+                <span class="hero-key">Ctrl+O</span>
+                <span data-i18n="heroOpen">Open Markdown File</span>
+              </button>
+              <button class="hero-action" id="hero-folder">
+                <span class="hero-key">Dir</span>
+                <span data-i18n="heroFolder">Open Workspace Folder</span>
+              </button>
+              <button class="hero-action" id="hero-settings">
+                <span class="hero-key">Ctrl+,</span>
+                <span data-i18n="heroSettings">Wallpaper &amp; Settings</span>
+              </button>
+            </div>
+            <div id="hero-recent" class="hero-recent hidden"></div>
+          </div>
+        </section>
+
+        <!-- Editor Container (Formatting Bar + Panes) -->
+        <section id="editor-view" class="editor-view">
+          <!-- Typora Formatting Toolbar -->
+          <div class="format-bar" id="format-bar">
+            <div class="fmt-group">
+              <button class="fmt-btn" data-fmt="h1" title="Heading 1 (Ctrl+1)">H1</button>
+              <button class="fmt-btn" data-fmt="h2" title="Heading 2 (Ctrl+2)">H2</button>
+              <button class="fmt-btn" data-fmt="h3" title="Heading 3 (Ctrl+3)">H3</button>
+            </div>
+            <span class="fmt-sep"></span>
+            <div class="fmt-group">
+              <button class="fmt-btn" data-fmt="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+              <button class="fmt-btn" data-fmt="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+              <button class="fmt-btn" data-fmt="strike" title="Strikethrough"><s>S</s></button>
+              <button class="fmt-btn" data-fmt="highlight" title="Highlight ==text==">Hi</button>
+              <button class="fmt-btn" data-fmt="code" title="Inline Code (Ctrl+`)">&lt;/&gt;</button>
+            </div>
+            <span class="fmt-sep"></span>
+            <div class="fmt-group">
+              <button class="fmt-btn" data-fmt="math-inline" title="Inline LaTeX $...$ (Ctrl+M)">$x$</button>
+              <button class="fmt-btn" data-fmt="math-block" title="Display LaTeX $$...$$ (Ctrl+Shift+M)">∑</button>
+              <button class="fmt-btn" data-fmt="code-block" title="Code Block (Ctrl+Shift+K)">{ }</button>
+            </div>
+            <span class="fmt-sep"></span>
+            <div class="fmt-group">
+              <button class="fmt-btn" data-fmt="quote" title="Blockquote">❝</button>
+              <button class="fmt-btn" data-fmt="callout" title="Callout Alert">ℹ</button>
+              <button class="fmt-btn" data-fmt="ul" title="Bullet List">•</button>
+              <button class="fmt-btn" data-fmt="ol" title="Ordered List">1.</button>
+              <button class="fmt-btn" data-fmt="task" title="Task List">☑</button>
+              <button class="fmt-btn" data-fmt="table" title="Insert Table (Ctrl+T)">⊞</button>
+              <button class="fmt-btn" data-fmt="link" title="Insert Link (Ctrl+K)">⛓</button>
+              <button class="fmt-btn" data-fmt="hr" title="Horizontal Rule">—</button>
+            </div>
+            <div class="fmt-spacer"></div>
+            <div class="fmt-group">
+              <button id="btn-find" class="fmt-btn" data-i18n="findBtn" title="Ctrl+F">Find</button>
+              <button id="btn-focus" class="fmt-btn" data-i18n="focusBtn" title="F8">Focus</button>
+              <button id="btn-typewriter" class="fmt-btn" data-i18n="typewriterBtn" title="F9">Typewriter</button>
+              <button id="btn-sync" class="fmt-btn active" data-i18n="syncBtn">Sync</button>
+            </div>
+          </div>
+
+          <!-- Floating Find & Replace Bar -->
+          <div id="find-bar" class="find-bar hidden">
+            <div class="find-row">
+              <input id="find-input" type="text" data-i18n-placeholder="findPlaceholder" />
+              <button id="find-case" class="mini-btn" title="Match Case">Aa</button>
+              <button id="find-regex" class="mini-btn" title="Regex">.*</button>
+              <span id="find-count" class="find-count">0 / 0</span>
+              <button id="find-prev" class="mini-btn">↑</button>
+              <button id="find-next" class="mini-btn">↓</button>
+              <button id="find-close" class="mini-btn">✕</button>
+            </div>
+            <div class="find-row">
+              <input id="replace-input" type="text" data-i18n-placeholder="replacePlaceholder" />
+              <button id="btn-replace-one" class="mini-btn" data-i18n="replaceOne">Replace</button>
+              <button id="btn-replace-all" class="mini-btn accent" data-i18n="replaceAll">All</button>
+            </div>
+          </div>
+
+          <!-- Large File Virtual Window Navigator -->
+          <div id="large-bar" class="large-bar hidden">
+            <span id="large-info"></span>
+            <div class="large-controls">
+              <button id="large-prev" class="mini-btn" data-i18n="largePrev">← Prev 500 Lines</button>
+              <button id="large-next" class="mini-btn" data-i18n="largeNext">Next 500 Lines →</button>
+              <input id="large-goto-input" type="number" min="1" placeholder="Line #" />
+              <button id="large-goto-btn" class="mini-btn accent" data-i18n="largeGo">Go</button>
+            </div>
+          </div>
+
+          <!-- Split / Live / Source Panes -->
+          <div id="panes-wrap" class="panes-wrap mode-split">
+            <!-- Left Source Pane -->
+            <div id="source-pane" class="source-pane">
+              <div id="line-gutter" class="line-gutter" aria-hidden="true"></div>
+              <div class="source-scroll-host" id="source-scroll-host">
+                <div id="source-highlight" class="source-highlight" aria-hidden="true"></div>
+                <textarea
+                  id="source-editor"
+                  class="source-editor"
+                  spellcheck="false"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  data-i18n-placeholder="editorPlaceholder"
+                ></textarea>
+              </div>
+            </div>
+
+            <!-- Draggable Split Divider -->
+            <div id="split-divider" class="split-divider"></div>
+
+            <!-- Right Live Rendered Preview / Typora Live Mode Pane -->
+            <div id="preview-pane" class="preview-pane">
+              <article id="preview-doc" class="preview-doc"></article>
+              <div id="load-more-wrap" class="load-more-wrap hidden">
+                <button id="btn-load-more" class="pill-btn"></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- Settings overlay -->
+      <section id="settings-view" class="settings-view hidden" aria-label="Settings">
+        <div class="settings-shell">
+          <nav class="settings-nav">
+            <button id="settings-back" class="settings-back">
+              <span>‹</span>
+              <span data-i18n="settingsBack">Settings</span>
+            </button>
+            <div class="settings-group-label" data-i18n="navGroupGeneral">General</div>
+            <button class="settings-nav-item active" data-section="appearance" data-i18n="navAppearance">Appearance</button>
+            <button class="settings-nav-item" data-section="editor" data-i18n="navEditor">Editor</button>
+            <button class="settings-nav-item" data-section="shortcuts" data-i18n="navShortcuts">Shortcuts</button>
+            <div class="settings-group-label" data-i18n="navGroupInfo">Info</div>
+            <button class="settings-nav-item" data-section="about" data-i18n="navAbout">About</button>
+          </nav>
+
+          <div class="settings-content">
+            <!-- Appearance & Kite Wallpaper Section -->
+            <div id="sec-appearance" class="settings-section">
+              <div class="settings-card">
+                <div class="settings-row">
+                  <div>
+                    <label for="language-select" class="row-title" data-i18n="lblLanguage">Language</label>
+                    <div class="row-desc" data-i18n="descLanguage">Interface display language</div>
+                  </div>
+                  <select id="language-select" class="settings-select"></select>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblAppearance">Appearance</div>
+                    <div class="row-desc" data-i18n="descAppearance">Switch between Dark and Light mode</div>
+                  </div>
+                  <div class="pill-group">
+                    <button class="pill-opt" data-light="false" data-i18n="optDark">Dark</button>
+                    <button class="pill-opt" data-light="true" data-i18n="optLight">Light</button>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblThemePreset">Theme Preset</div>
+                    <div class="row-desc" data-i18n="descThemePreset">Base palette before optional wallpaper tinting</div>
+                  </div>
+                  <div class="pill-group">
+                    <button class="pill-opt" data-preset="kite">Kite</button>
+                    <button class="pill-opt" data-preset="github">GitHub</button>
+                    <button class="pill-opt" data-preset="nord">Nord</button>
+                    <button class="pill-opt" data-preset="sepia">Sepia</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-heading" data-i18n="secWallpaper">Wallpaper</div>
+              <div class="settings-card">
+                <div class="wp-gallery-block">
+                  <div class="row-title" data-i18n="lblImage">Image</div>
+                  <div id="wp-status" class="row-desc" role="status" hidden></div>
+                  <div id="wp-gallery" class="wp-gallery"></div>
+                </div>
+
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblEffect">Effect</div>
+                    <div class="row-desc" data-i18n="descEffect">Rendered once and cached</div>
+                  </div>
+                  <div class="pill-group" id="wp-effect-group">
+                    <button class="pill-opt" data-effect="none" data-i18n="fxNone">None</button>
+                    <button class="pill-opt" data-effect="scanlines" data-i18n="fxScanlines">Scanlines</button>
+                    <button class="pill-opt" data-effect="ascii" data-i18n="fxAscii">ASCII</button>
+                    <button class="pill-opt" data-effect="halftone" data-i18n="fxHalftone">Halftone</button>
+                    <button class="pill-opt" data-effect="dither" data-i18n="fxDither">Dither</button>
+                  </div>
+                </div>
+
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblVisibility">Visibility</div>
+                    <div class="row-desc" data-i18n="descVisibility">How strongly the picture shows</div>
+                  </div>
+                  <div class="stepper">
+                    <button id="wp-vis-minus" class="step-btn">−</button>
+                    <span id="wp-vis-val" class="step-val">100%</span>
+                    <button id="wp-vis-plus" class="step-btn">+</button>
+                  </div>
+                </div>
+
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblWpFills">Wallpaper fills the window</div>
+                    <div class="row-desc" data-i18n="descWpFills">Panels carry the text, sized to the picture; off keeps it to the empty view</div>
+                  </div>
+                  <button id="toggle-wp-fills" class="kite-switch" role="switch" aria-checked="true">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblWpColors">Theme colours from wallpaper</div>
+                    <div class="row-desc" data-i18n="descWpColors">Surfaces, accent and hover washes lean toward the image's dominant colour</div>
+                  </div>
+                  <button id="toggle-wp-colors" class="kite-switch" role="switch" aria-checked="true">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="section-heading" data-i18n="secMotion">Motion</div>
+              <div class="settings-card">
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblReduceMotion">Reduce motion</div>
+                    <div class="row-desc" data-i18n="descReduceMotion">Disable 180 ms wallpaper crossfades and UI transitions</div>
+                  </div>
+                  <button id="toggle-reduce-motion" class="kite-switch" role="switch" aria-checked="false">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Editor Settings Section -->
+            <div id="sec-editor" class="settings-section hidden">
+              <div class="settings-card">
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblFontSize">Font size</div>
+                    <div class="row-desc" data-i18n="descFontSize">10–28 pt · Ctrl+= / Ctrl+- / Ctrl+0</div>
+                  </div>
+                  <div class="stepper">
+                    <button id="font-minus" class="step-btn">−</button>
+                    <span id="font-val" class="step-val">14 pt</span>
+                    <button id="font-plus" class="step-btn">+</button>
+                    <button id="font-reset" class="step-btn text-btn" data-i18n="btnReset">Reset</button>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblWidth">Reading width</div>
+                    <div class="row-desc" data-i18n="descWidth">Maximum width of the rendered prose column</div>
+                  </div>
+                  <div class="stepper">
+                    <button id="width-minus" class="step-btn">−</button>
+                    <span id="width-val" class="step-val">860 px</span>
+                    <button id="width-plus" class="step-btn">+</button>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblLineNums">Line numbers</div>
+                    <div class="row-desc" data-i18n="descLineNums">Display line gutter in Source &amp; Split modes</div>
+                  </div>
+                  <button id="toggle-line-nums" class="kite-switch" role="switch" aria-checked="true">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblSyncScroll">Synchronized split scroll</div>
+                    <div class="row-desc" data-i18n="descSyncScroll">Keep source editor and live preview aligned by block line</div>
+                  </div>
+                  <button id="toggle-sync-scroll" class="kite-switch" role="switch" aria-checked="true">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+                <div class="settings-row">
+                  <div>
+                    <div class="row-title" data-i18n="lblAutoSave">Auto save</div>
+                    <div class="row-desc" data-i18n="descAutoSave">Automatically save backed files 1.5s after editing stops</div>
+                  </div>
+                  <button id="toggle-autosave" class="kite-switch" role="switch" aria-checked="false">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Shortcuts Section -->
+            <div id="sec-shortcuts" class="settings-section hidden">
+              <div class="settings-card">
+                <div class="shortcut-grid">
+                  <div class="sc-item"><span data-i18n="scSplit">Split Dual-Pane View</span><kbd>Ctrl + \</kbd></div>
+                  <div class="sc-item"><span data-i18n="scLive">Typora Live Mode</span><kbd>Ctrl + /</kbd></div>
+                  <div class="sc-item"><span data-i18n="scSource">Source Code Mode</span><kbd>Ctrl + Shift + /</kbd></div>
+                  <div class="sc-item"><span data-i18n="scSidebar">Toggle Sidebar</span><kbd>Ctrl + Shift + L</kbd></div>
+                  <div class="sc-item"><span data-i18n="scNew">New Document</span><kbd>Ctrl + N</kbd></div>
+                  <div class="sc-item"><span data-i18n="scOpen">Open File</span><kbd>Ctrl + O</kbd></div>
+                  <div class="sc-item"><span data-i18n="scSave">Save / Save As</span><kbd>Ctrl + S / Ctrl+Shift+S</kbd></div>
+                  <div class="sc-item"><span data-i18n="scFind">Find &amp; Replace</span><kbd>Ctrl + F / Ctrl + H</kbd></div>
+                  <div class="sc-item"><span data-i18n="scBoldItalic">Bold / Italic</span><kbd>Ctrl + B / Ctrl + I</kbd></div>
+                  <div class="sc-item"><span data-i18n="scLatex">Inline / Display LaTeX</span><kbd>Ctrl + M / Ctrl+Shift+M</kbd></div>
+                  <div class="sc-item"><span data-i18n="scHeadings">Heading 1–6</span><kbd>Ctrl + 1 … 6</kbd></div>
+                  <div class="sc-item"><span data-i18n="scTableLink">Insert Table / Link</span><kbd>Ctrl + T / Ctrl + K</kbd></div>
+                  <div class="sc-item"><span data-i18n="scFocusTypewriter">Focus / Typewriter Mode</span><kbd>F8 / F9</kbd></div>
+                  <div class="sc-item"><span data-i18n="scSettings">Settings &amp; Wallpaper</span><kbd>Ctrl + ,</kbd></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- About Section -->
+            <div id="sec-about" class="settings-section hidden">
+              <div class="settings-card about-card">
+                <h3>MarkType v0.1.0</h3>
+                <p data-i18n="aboutDesc"></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Bottom Status Bar -->
+    <footer class="statusbar">
+      <div class="status-left">
+        <span id="st-cursor">Ln 1, Col 1</span>
+        <span class="st-dot">·</span>
+        <span id="st-mode">Split</span>
+        <span id="st-large-badge" class="st-badge hidden" data-i18n="largeModeBadge">Large Rope Mode</span>
+      </div>
+      <div class="status-center">
+        <span id="st-latency" class="latency-pill">⚡ 0.0 ms</span>
+      </div>
+      <div class="status-right">
+        <span id="st-words">0</span>
+        <span class="st-dot">·</span>
+        <span id="st-chars">0</span>
+        <span class="st-dot">·</span>
+        <span id="st-read">0</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden"></div>
+  <article id="print-document" class="preview-doc" aria-hidden="true"></article>
+
+  <script src="http://marktype.localhost/katex/katex.min.js"></script>
+  <script src="http://marktype.localhost/katex/mhchem.min.js"></script>
+  <script src="http://marktype.localhost/i18n.js"></script>
+  <script src="http://marktype.localhost/source.js"></script>
+  <script src="http://marktype.localhost/app.js"></script>
+</body>
+</html>

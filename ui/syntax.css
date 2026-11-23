@@ -1,0 +1,30 @@
+:root {
+  --hl-kw: #c399ff;
+  --hl-str: #8ee3ae;
+  --hl-num: #ffc979;
+  --hl-cmt: #9a9db0;
+  --hl-ty: #72dce9;
+  --hl-fn: #9bbdff;
+  --hl-mac: #f69bcc;
+  --hl-key: #83cff3;
+}
+
+body.light, #print-document {
+  --hl-kw: #7135a2;
+  --hl-str: #1b6e42;
+  --hl-num: #964913;
+  --hl-cmt: #646a7a;
+  --hl-ty: #086a77;
+  --hl-fn: #2455a7;
+  --hl-mac: #a52a66;
+  --hl-key: #176678;
+}
+
+.hl-kw { color: var(--hl-kw); }
+.hl-str { color: var(--hl-str); }
+.hl-num { color: var(--hl-num); }
+.hl-cmt { color: var(--hl-cmt); }
+.hl-ty { color: var(--hl-ty); }
+.hl-fn { color: var(--hl-fn); }
+.hl-mac { color: var(--hl-mac); }
+.hl-key { color: var(--hl-key); }
