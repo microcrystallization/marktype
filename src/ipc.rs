@@ -475,11 +475,16 @@ impl AppState {
                 cancel.into(),
             ))
             .show();
+        let decision = match decision {
+            MessageDialogResult::Custom(choice) if choice == save => MessageDialogResult::Yes,
+            MessageDialogResult::Custom(choice) if choice == discard => MessageDialogResult::No,
+            native => native,
+        };
         match decision {
-            MessageDialogResult::Custom(choice) if choice == save => self
+            MessageDialogResult::Yes => self
                 .save_document(idx, false, true)
                 .map(|saved| saved.is_some()),
-            MessageDialogResult::Custom(choice) if choice == discard => Ok(true),
+            MessageDialogResult::No => Ok(true),
             _ => Ok(false),
         }
     }
