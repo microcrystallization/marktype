@@ -1,0 +1,3 @@
+# Keep the upstream translation files and license byte-for-byte.
+*.isl -text -whitespace
+LICENSE-InnoSetup.txt -text whitespace=cr-at-eol

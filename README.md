@@ -85,6 +85,8 @@ cargo run --locked --release -- examples/getting-started.md
 
 CI runs Rust formatting, Clippy, Release tests, the Windows build, and JavaScript syntax checks on `main` and pull requests. Run **Windows packages** in the Actions tab for an installer, portable ZIP, and SHA-256 checksums. Pushing a version tag such as `v0.1.0` publishes those files to the private repository’s Releases page.
 
+Both workflows restore the same Windows Release dependency cache. Successful pushes to `main` populate it for future CI and packaging runs. The cache follows the Rust toolchain and lockfile, and package files are uploaded as artifacts.
+
 ## Project Structure
 
 ```text

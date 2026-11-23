@@ -40,8 +40,8 @@ ChangesAssociations=yes
 DisableProgramGroupPage=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
+Name: "chinesesimplified"; MessagesFile: "languages\ChineseSimplified.isl"
+Name: "chinesetraditional"; MessagesFile: "languages\ChineseTraditional.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
@@ -71,6 +71,7 @@ Source: "{#BuildDir}\marktype.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "languages\LICENSE-InnoSetup.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\examples\getting-started.md"; DestDir: "{app}\examples"; Flags: ignoreversion
 
 [Icons]

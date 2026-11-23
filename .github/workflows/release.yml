@@ -9,18 +9,35 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   package:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Restore Windows Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-x64-release
+          cache-bin: "false"
+          save-if: "false"
       - name: Run tests
         run: cargo test --locked --all-targets --release
       - name: Install Inno Setup
         shell: pwsh
         run: |
+          $installed = @(
+            (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source,
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+          if ($installed) {
+            Write-Host "Using the available Inno Setup compiler."
+            exit 0
+          }
           choco install innosetup --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build installer and portable archive
