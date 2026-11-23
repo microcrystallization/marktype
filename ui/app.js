@@ -101,7 +101,7 @@
     searchVersion: null,
     searchRequest: 0,
     searchTimer: null,
-    lastInputAt: 0,
+    closingDocId: null,
     prevBlurUrl: "",
     prevHeroUrl: "",
     activeLine: 0,
@@ -183,6 +183,7 @@
   const elReplaceInput = $("replace-input");
   const elFindCount = $("find-count");
   const elToast = $("toast");
+  const elCloseDialog = $("close-dialog");
 
   const elWpBlurPrev = $("wp-blur-prev");
   const elWpBlurCurr = $("wp-blur-curr");
@@ -411,7 +412,6 @@
   }
 
   function applyIncrementalPatch(patch) {
-    const start = performance.now();
     state.totalBlocks = patch.totalBlocks;
     state.totalLines = patch.totalLines;
     state.doc.version = patch.version;
@@ -433,11 +433,6 @@
     updateLoadMoreVisibility();
     updateLargeBar();
 
-    const elapsed = performance.now() - (state.lastInputAt || start);
-    const pill = $("st-latency");
-    pill.textContent = elapsed.toFixed(1) + " ms (Rust " + (patch.rustUs / 1000).toFixed(2) + " ms)";
-    pill.style.color = elapsed < 10 ? "" : "var(--hl-num)";
-    if (!state.pendingEdits) state.lastInputAt = 0;
   }
 
   function requestPreviewBlocks(count = 150) {
@@ -581,7 +576,6 @@
   function sendEdit(baseLine, diff, source = null) {
     if (!state.doc) return;
     state.pendingEdits++;
-    state.lastInputAt = performance.now();
     invalidateSearch();
     send({ cmd: "edit", docId: state.activeTabId, baseLine, ...diff, source });
   }
@@ -795,6 +789,17 @@
   }
 
   // ===== Tabs, Outline, File Tree, Stats =====
+  function applyTabSummaries(tabs) {
+    state.tabs = tabs || state.tabs;
+    const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (state.doc && active && state.doc.path !== active.path) {
+      state.doc.path = active.path;
+      state.previewNeedsRefresh = true;
+      requestPreviewBlocks();
+    }
+    renderTabs();
+  }
+
   function renderTabs() {
     for (const id of ["btn-save", "btn-save-as", "btn-export", "btn-print", "menu-close-tab", "menu-find", "menu-replace"]) {
       $(id).disabled = !state.activeTabId;
@@ -928,7 +933,6 @@
     state.previewNeedsRefresh = false;
     state.previewStart = 0;
     state.previewTarget = null;
-    state.lastInputAt = 0;
     elSourceEditor.readOnly = false;
     invalidateSearch();
     if (!doc) {
@@ -1594,6 +1598,22 @@
     if (state.doc) send({ cmd: "print", docId: state.activeTabId });
   }
 
+  function resolveClose(choice) {
+    const docId = state.closingDocId;
+    if (!docId) return;
+    state.closingDocId = null;
+    elCloseDialog.close();
+    send({ cmd: "resolveClose", docId, choice });
+  }
+
+  elCloseDialog.querySelectorAll("[data-close-choice]").forEach((button) => {
+    button.onclick = () => resolveClose(button.dataset.closeChoice);
+  });
+  elCloseDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolveClose("cancel");
+  });
+
   async function printDocument(html) {
     const paper = $("print-document");
     paper.innerHTML = html;
@@ -1844,7 +1864,7 @@
 
   // ===== Global Keyboard Shortcuts =====
   window.addEventListener("keydown", (e) => {
-    if (e.isComposing || e.defaultPrevented) return;
+    if (e.isComposing || e.defaultPrevented || elCloseDialog.open) return;
     const mod = e.ctrlKey || e.metaKey;
 
     if (e.key === "Escape") {
@@ -1993,24 +2013,23 @@
         break;
 
       case "tabsUpdated":
-        state.tabs = msg.tabs || state.tabs;
-        renderTabs();
+        applyTabSummaries(msg.tabs);
+        if (msg.toast) showToast(msg.toast);
+        break;
+
+      case "confirmClose":
+        applyTabSummaries(msg.tabs);
+        state.closingDocId = msg.docId;
+        $("close-document-name").textContent = msg.title;
+        if (!elCloseDialog.open) elCloseDialog.showModal();
         break;
 
       case "saved":
-        state.tabs = msg.tabs || state.tabs;
-        if (state.doc && msg.docId === state.activeTabId && msg.path) {
-          state.doc.path = msg.path;
-          if (msg.refreshPreview) {
-            state.previewNeedsRefresh = true;
-            requestPreviewBlocks();
-          }
-        }
+        applyTabSummaries(msg.tabs);
         if (msg.fileTree !== undefined) {
           state.fileTree = msg.fileTree;
           renderFileTree();
         }
-        renderTabs();
         if (msg.toast) showToast(msg.toast);
         break;
 
@@ -2045,7 +2064,7 @@
         break;
 
       case "insertImagePath":
-        if (msg.path && state.doc) {
+        if (msg.path && state.doc && !elCloseDialog.open) {
           const path = msg.path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/");
           const name = (msg.path.split(/[\\/]/).pop() || "image").replace(/[[\]\\]/g, "\\$&");
           const image = "\n![" + name + "](<" + path + ">)\n";

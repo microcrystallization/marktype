@@ -481,9 +481,6 @@
         <span id="st-mode">Split</span>
         <span id="st-large-badge" class="st-badge hidden" data-i18n="largeModeBadge">Large Rope Mode</span>
       </div>
-      <div class="status-center">
-        <span id="st-latency" class="latency-pill">⚡ 0.0 ms</span>
-      </div>
       <div class="status-right">
         <span id="st-words">0</span>
         <span class="st-dot">·</span>
@@ -497,6 +494,18 @@
   <!-- Toast Notification -->
   <div id="toast" class="toast hidden"></div>
   <article id="print-document" class="preview-doc" aria-hidden="true"></article>
+  <dialog id="close-dialog" class="close-dialog" aria-labelledby="close-dialog-title" aria-describedby="close-dialog-description">
+    <h2 id="close-dialog-title" data-i18n="closeDialogTitle">Save changes?</h2>
+    <p id="close-dialog-description">
+      <strong id="close-document-name"></strong>
+      <span data-i18n="closeDialogDescription">This document has unsaved changes.</span>
+    </p>
+    <div class="close-dialog-actions">
+      <button type="button" data-close-choice="discard" data-i18n="closeDiscard">Don't Save</button>
+      <button type="button" data-close-choice="cancel" data-i18n="closeCancel" autofocus>Cancel</button>
+      <button type="button" class="close-dialog-save" data-close-choice="save" data-i18n="menuSave">Save</button>
+    </div>
+  </dialog>
 
   <script src="http://marktype.localhost/katex/katex.min.js"></script>
   <script src="http://marktype.localhost/katex/mhchem.min.js"></script>

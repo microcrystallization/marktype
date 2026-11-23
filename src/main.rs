@@ -76,6 +76,18 @@ fn dispatch_json(webview: &wry::WebView, val: &serde_json::Value) {
     }
 }
 
+fn handle_response(
+    webview: &wry::WebView,
+    control_flow: &mut ControlFlow,
+    response: &serde_json::Value,
+) {
+    match response.get("event").and_then(|event| event.as_str()) {
+        Some("exitRequested") => *control_flow = ControlFlow::Exit,
+        Some("noop") | None => {}
+        _ => dispatch_json(webview, response),
+    }
+}
+
 fn parse_resize_dir(dir: &str) -> Option<ResizeDirection> {
     Some(match dir {
         "n" => ResizeDirection::North,
@@ -202,9 +214,7 @@ fn main() {
                             return;
                         }
                         "windowClose" => {
-                            if state.confirm_window_close() {
-                                *control_flow = ControlFlow::Exit;
-                            }
+                            handle_response(&webview, control_flow, &state.request_window_close());
                             return;
                         }
                         _ => {}
@@ -216,9 +226,7 @@ fn main() {
                 if state.settings.light != prev_light {
                     configure_windows_frameless_chrome(&window, !state.settings.light);
                 }
-                if response.get("event").and_then(|v| v.as_str()) != Some("noop") {
-                    dispatch_json(&webview, &response);
-                }
+                handle_response(&webview, control_flow, &response);
             }
             Event::UserEvent(UserEvent::FileDropped(path)) => {
                 let ext = path
@@ -268,9 +276,7 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                if state.confirm_window_close() {
-                    *control_flow = ControlFlow::Exit;
-                }
+                handle_response(&webview, control_flow, &state.request_window_close());
             }
             Event::MainEventsCleared => {
                 for response in state.run_autosaves(Instant::now()) {

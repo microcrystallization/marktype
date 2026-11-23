@@ -1,10 +1,9 @@
 //! Application state and typed IPC command handlers bridging WebView2 <-> Rust engine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -71,6 +70,25 @@ pub struct AppState {
     pub wp_error: Option<String>,
     pub folder_root: Option<PathBuf>,
     autosaves: HashMap<String, Instant>,
+    pending_close: Option<CloseRequest>,
+}
+
+enum CloseTarget {
+    Tab(String),
+    Window,
+}
+
+struct CloseRequest {
+    target: CloseTarget,
+    documents: VecDeque<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum CloseChoice {
+    Save,
+    Discard,
+    Cancel,
 }
 
 impl AppState {
@@ -91,6 +109,7 @@ impl AppState {
             wp_error: None,
             folder_root,
             autosaves: HashMap::new(),
+            pending_close: None,
         };
 
         // Prepare initial wallpaper synchronously on fast cache hit, or compute once
@@ -372,14 +391,18 @@ impl AppState {
     }
 
     pub fn next_autosave(&self) -> Option<Instant> {
-        self.autosaves.values().copied().min()
+        self.autosaves
+            .iter()
+            .filter(|(id, _)| !self.closing_document(id))
+            .map(|(_, at)| *at)
+            .min()
     }
 
     pub fn run_autosaves(&mut self, now: Instant) -> Vec<Value> {
         let due: Vec<_> = self
             .autosaves
             .iter()
-            .filter(|(_, at)| **at <= now)
+            .filter(|(id, at)| **at <= now && !self.closing_document(id))
             .map(|(id, _)| id.clone())
             .collect();
         let mut responses = Vec::new();
@@ -402,91 +425,120 @@ impl AppState {
         responses
     }
 
-    pub fn confirm_window_close(&mut self) -> bool {
-        (0..self.docs.len()).all(|idx| match self.confirm_close(idx) {
-            Ok(proceed) => proceed,
-            Err(message) => {
-                MessageDialog::new()
-                    .set_level(MessageLevel::Error)
-                    .set_title("MarkType")
-                    .set_description(message)
-                    .show();
-                false
+    // Keep autosave from writing a document while the user is choosing whether to discard it.
+    fn closing_document(&self, id: &str) -> bool {
+        match self.pending_close.as_ref().map(|close| &close.target) {
+            Some(CloseTarget::Window) => true,
+            Some(CloseTarget::Tab(tab)) => tab == id,
+            None => false,
+        }
+    }
+
+    pub fn request_window_close(&mut self) -> Value {
+        self.begin_close(CloseTarget::Window)
+    }
+
+    fn begin_close(&mut self, target: CloseTarget) -> Value {
+        if self.pending_close.is_some() {
+            return json!({ "event": "noop" });
+        }
+        let documents = self
+            .docs
+            .iter()
+            .filter(|doc| {
+                doc.dirty
+                    && match &target {
+                        CloseTarget::Tab(id) => &doc.id == id,
+                        CloseTarget::Window => true,
+                    }
+            })
+            .map(|doc| doc.id.clone())
+            .collect();
+        self.pending_close = Some(CloseRequest { target, documents });
+        self.advance_close()
+    }
+
+    fn advance_close(&mut self) -> Value {
+        let Some(request) = &mut self.pending_close else {
+            return json!({ "event": "noop" });
+        };
+        while let Some(id) = request.documents.front() {
+            if let Some(doc) = self.docs.iter().find(|doc| &doc.id == id && doc.dirty) {
+                return json!({
+                    "event": "confirmClose",
+                    "docId": doc.id,
+                    "title": doc.title,
+                    "tabs": self.tab_summaries(),
+                });
             }
+            request.documents.pop_front();
+        }
+        match self.pending_close.take().unwrap().target {
+            CloseTarget::Window => json!({ "event": "exitRequested" }),
+            CloseTarget::Tab(id) => self.finish_close_tab(&id),
+        }
+    }
+
+    fn resolve_close(&mut self, id: &str, choice: CloseChoice) -> Value {
+        let Some(next) = self
+            .pending_close
+            .as_ref()
+            .and_then(|close| close.documents.front())
+        else {
+            return json!({ "event": "noop" });
+        };
+        if next != id {
+            return json!({ "event": "noop" });
+        }
+        match choice {
+            CloseChoice::Cancel => return self.cancel_close(None),
+            CloseChoice::Save => {
+                if let Some(idx) = self.docs.iter().position(|doc| doc.id == id && doc.dirty) {
+                    match self.save_document(idx, false, true) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return self.cancel_close(None),
+                        Err(error) => return self.cancel_close(Some(error)),
+                    }
+                }
+            }
+            CloseChoice::Discard => {}
+        }
+        self.pending_close.as_mut().unwrap().documents.pop_front();
+        self.advance_close()
+    }
+
+    fn cancel_close(&mut self, message: Option<String>) -> Value {
+        self.pending_close = None;
+        json!({
+            "event": "tabsUpdated",
+            "tabs": self.tab_summaries(),
+            "toast": message,
         })
     }
 
-    fn confirm_close(&mut self, idx: usize) -> Result<bool, String> {
-        let doc = &self.docs[idx];
-        if !doc.dirty {
-            return Ok(true);
-        }
-        let (title, message, save, discard, cancel) = match self.settings.language.as_str() {
-            "zh-CN" => (
-                "未保存的更改",
-                "要保存对此文档的更改吗？",
-                "保存",
-                "不保存",
-                "取消",
-            ),
-            "zh-TW" => (
-                "未儲存的變更",
-                "要儲存此文件的變更嗎？",
-                "儲存",
-                "不儲存",
-                "取消",
-            ),
-            "ja" => (
-                "未保存の変更",
-                "この文書の変更を保存しますか？",
-                "保存",
-                "保存しない",
-                "キャンセル",
-            ),
-            "ko" => (
-                "저장하지 않은 변경 사항",
-                "이 문서의 변경 사항을 저장하시겠습니까?",
-                "저장",
-                "저장 안 함",
-                "취소",
-            ),
-            "fr" => (
-                "Modifications non enregistrées",
-                "Enregistrer les modifications apportées à ce document ?",
-                "Enregistrer",
-                "Ne pas enregistrer",
-                "Annuler",
-            ),
-            _ => (
-                "Unsaved changes",
-                "Save changes to this document?",
-                "Save",
-                "Don't Save",
-                "Cancel",
-            ),
+    fn finish_close_tab(&mut self, id: &str) -> Value {
+        let Some(idx) = self.docs.iter().position(|doc| doc.id == id) else {
+            return json!({ "event": "noop" });
         };
-        let decision = MessageDialog::new()
-            .set_level(MessageLevel::Warning)
-            .set_title(title)
-            .set_description(format!("{}\n\n{message}", doc.title))
-            .set_buttons(MessageButtons::YesNoCancelCustom(
-                save.into(),
-                discard.into(),
-                cancel.into(),
-            ))
-            .show();
-        let decision = match decision {
-            MessageDialogResult::Custom(choice) if choice == save => MessageDialogResult::Yes,
-            MessageDialogResult::Custom(choice) if choice == discard => MessageDialogResult::No,
-            native => native,
+        let closing_active = self.active_tab == Some(idx);
+        self.autosaves.remove(id);
+        self.docs.remove(idx);
+        self.active_tab = match self.active_tab {
+            _ if self.docs.is_empty() => None,
+            Some(active) if active < idx => Some(active),
+            Some(active) if active > idx => Some(active - 1),
+            _ => Some(idx.min(self.docs.len() - 1)),
         };
-        match decision {
-            MessageDialogResult::Yes => self
-                .save_document(idx, false, true)
-                .map(|saved| saved.is_some()),
-            MessageDialogResult::No => Ok(true),
-            _ => Ok(false),
+        if !closing_active {
+            return json!({ "event": "tabsUpdated", "tabs": self.tab_summaries() });
         }
+        let doc = self.active_doc_snapshot(200);
+        json!({
+            "event": "tabSwitched",
+            "tabs": self.tab_summaries(),
+            "activeTabId": self.active_doc().map(|d| d.id.clone()),
+            "doc": doc,
+        })
     }
 
     fn save_document(
@@ -545,8 +597,6 @@ impl AppState {
             "event": "saved",
             "docId": doc.id,
             "tabs": self.tab_summaries(),
-            "path": doc.path.as_deref().map(Path::to_string_lossy),
-            "refreshPreview": changed_path,
             "toast": format!("Saved {}", doc.title),
         });
         if changed_path {
@@ -692,34 +742,9 @@ impl AppState {
                 })
             }
 
-            IpcCommand::CloseTab { id } => {
-                let closing_active = self.active_doc().is_some_and(|doc| doc.id == id);
-                if let Some(idx) = self.docs.iter().position(|d| d.id == id) {
-                    match self.confirm_close(idx) {
-                        Ok(true) => {}
-                        Ok(false) => return json!({ "event": "noop" }),
-                        Err(e) => return error_toast(e),
-                    }
-                    self.autosaves.remove(&id);
-                    self.docs.remove(idx);
-                    self.active_tab = match self.active_tab {
-                        _ if self.docs.is_empty() => None,
-                        Some(active) if active < idx => Some(active),
-                        Some(active) if active > idx => Some(active - 1),
-                        _ => Some(idx.min(self.docs.len() - 1)),
-                    };
-                }
-                if !closing_active {
-                    return json!({ "event": "tabsUpdated", "tabs": self.tab_summaries() });
-                }
-                let doc = self.active_doc_snapshot(200);
-                json!({
-                    "event": "tabSwitched",
-                    "tabs": self.tab_summaries(),
-                    "activeTabId": self.active_doc().map(|d| d.id.clone()),
-                    "doc": doc,
-                })
-            }
+            IpcCommand::CloseTab { id } => self.begin_close(CloseTarget::Tab(id)),
+
+            IpcCommand::ResolveClose { doc_id, choice } => self.resolve_close(&doc_id, choice),
 
             IpcCommand::OpenFileDialog => {
                 let picked = rfd::FileDialog::new()
@@ -1262,6 +1287,10 @@ enum IpcCommand {
     CloseTab {
         id: String,
     },
+    ResolveClose {
+        doc_id: String,
+        choice: CloseChoice,
+    },
     OpenFileDialog,
     OpenPath {
         path: String,
@@ -1356,29 +1385,38 @@ struct SettingsPatch {
 mod tests {
     use super::*;
 
-    #[test]
-    fn autosave_writes_the_edited_tab_after_switching_to_another() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("first.md");
-        std::fs::write(&path, "original").unwrap();
-        let mut state = AppState {
+    fn test_state(docs: Vec<Document>) -> AppState {
+        AppState {
             settings: Settings {
                 auto_save: true,
                 ..Settings::default()
             },
-            docs: vec![Document::new(
-                "first".into(),
-                "first.md".into(),
-                Some(dunce::canonicalize(&path).unwrap()),
-                "original",
-            )],
+            docs,
             active_tab: Some(0),
-            next_doc_num: 2,
+            next_doc_num: 3,
             prepared_wp: None,
             wp_error: None,
             folder_root: None,
             autosaves: HashMap::new(),
-        };
+            pending_close: None,
+        }
+    }
+
+    fn saved_document(path: &Path) -> Document {
+        std::fs::write(path, "original").unwrap();
+        Document::new(
+            "first".into(),
+            "first.md".into(),
+            Some(dunce::canonicalize(path).unwrap()),
+            "original",
+        )
+    }
+
+    #[test]
+    fn autosave_writes_the_edited_tab_after_switching_to_another() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("first.md");
+        let mut state = test_state(vec![saved_document(&path)]);
         let edit = json!({
             "cmd": "edit", "docId": "first", "baseLine": 0,
             "startChar": 0, "endChar": 8, "text": "saved",
@@ -1391,5 +1429,69 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "saved");
         assert!(!state.docs[0].dirty);
         assert!(state.active_doc().unwrap().path.is_none());
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_requires_a_decision_for_that_document() {
+        let mut doc = Document::new("first".into(), "first.md".into(), None, "original");
+        doc.apply_edit(0, 8, "edited", false);
+        let mut state = test_state(vec![doc]);
+        let close = r#"{"cmd":"closeTab","id":"first"}"#;
+        assert_eq!(state.handle_command(close)["event"], "confirmClose");
+        assert_eq!(
+            state.resolve_close("other", CloseChoice::Discard)["event"],
+            "noop"
+        );
+        assert_eq!(state.active_doc().unwrap().full_text(), "edited");
+        assert_eq!(
+            state.resolve_close("first", CloseChoice::Cancel)["event"],
+            "tabsUpdated"
+        );
+        assert_eq!(state.docs.len(), 1);
+        assert_eq!(state.handle_command(close)["docId"], "first");
+        assert_eq!(
+            state.resolve_close("first", CloseChoice::Discard)["event"],
+            "tabSwitched"
+        );
+        assert!(state.docs.is_empty());
+    }
+
+    #[test]
+    fn closing_the_window_pauses_autosave_and_cancelling_keeps_all_tabs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("first.md");
+        let mut first = saved_document(&path);
+        first.apply_edit(0, 8, "saved changes", false);
+        let mut second = Document::new("second".into(), "second.md".into(), None, "");
+        second.apply_edit(0, 0, "another change", false);
+        let mut state = test_state(vec![first, second]);
+        let now = Instant::now();
+        state.autosaves.insert("first".into(), now);
+
+        assert_eq!(state.request_window_close()["docId"], "first");
+        assert_eq!(
+            state.resolve_close("first", CloseChoice::Discard)["docId"],
+            "second"
+        );
+        assert!(state.next_autosave().is_none());
+        assert!(state.run_autosaves(now).is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original");
+        assert_eq!(
+            state.resolve_close("second", CloseChoice::Cancel)["event"],
+            "tabsUpdated"
+        );
+        assert_eq!(state.docs.len(), 2);
+        assert!(state.docs.iter().all(|doc| doc.dirty));
+
+        assert_eq!(state.request_window_close()["docId"], "first");
+        assert_eq!(
+            state.resolve_close("first", CloseChoice::Save)["docId"],
+            "second"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "saved changes");
+        assert_eq!(
+            state.resolve_close("second", CloseChoice::Discard)["event"],
+            "exitRequested"
+        );
     }
 }
