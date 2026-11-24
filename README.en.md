@@ -39,6 +39,11 @@ All screenshots use the light GitHub theme and The Great Wave wallpaper. The doc
 
 ## Writing and export
 
+- Split, Live Preview, and Source share a CodeMirror 6 editor with undo across view changes, multiple cursors, code folding, and search highlights.
+- Paste a clipboard image to save it in the document's `assets/` folder and insert a relative link. An untitled document prompts for a save location first.
+- Reload changes made to a file on disk or keep the editor's version. MarkType restores tabs, unsaved drafts, and window geometry when reopened.
+- Right-click workspace items to create, rename, trash, or show them in the system file manager. Use `Ctrl+Shift+F` to search the workspace.
+- Render Mermaid diagrams offline and choose whether HTML exports embed local images. Word and LaTeX export are available when Pandoc is installed.
 - Bundled KaTeX, `mhchem`, and math fonts render equations and chemical notation offline.
 - Tabs, a file tree, find and replace, autosave, HTML export, and printing to PDF through the system dialog.
 - Large files load in source and preview windows. Live Preview draws content near the viewport and sends edit ranges to Rust's Rope text buffer.
@@ -80,7 +85,9 @@ cargo run --locked --release -- examples/markdown-tour.md
 
 [CI](https://github.com/microcrystallization/marktype/actions/workflows/ci.yml) runs checks, tests, and desktop smoke tests. Run [Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) manually for build artifacts. Pushing a new `v*` tag that matches the version in `Cargo.toml` creates a GitHub Release with packages and a SHA-256 checksum file.
 
-The application embeds CodeMirror and KaTeX. When changing the live editor, use Node.js 24 to run `npm ci` and `npm run build:live`, then commit the updated offline bundle.
+The application embeds CodeMirror, KaTeX, and Mermaid. Use Node.js 24 to run `npm ci`, then `npm run build:live` and `npm run build:diagrams` to update the offline bundles.
+
+On a Mac configured with an Apple Developer ID and `notarytool` credentials, pass `MARKTYPE_MACOS_IDENTITY` and `MARKTYPE_NOTARY_PROFILE` to `scripts/build-macos.sh` to sign, notarize, and staple the DMG.
 
 ## License
 

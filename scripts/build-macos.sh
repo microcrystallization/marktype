@@ -26,7 +26,19 @@ install -m 644 packaging/macos/MarkType.icns LICENSE NOTICE.md "$app/Contents/Re
 plutil -insert CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
 plutil -insert CFBundleVersion -string "${version%%-*}" "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
-codesign --force --sign - "$app"
+if [[ -n ${MARKTYPE_MACOS_IDENTITY:-} ]]; then
+  codesign --force --options runtime --timestamp --sign "$MARKTYPE_MACOS_IDENTITY" "$app"
+else
+  codesign --force --sign - "$app"
+fi
 codesign --verify --strict "$app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -ov -format UDZO -volname MarkType -srcfolder "$staging" "dist/MarkType-$version-macos-$arch.dmg"
+dmg="dist/MarkType-$version-macos-$arch.dmg"
+hdiutil create -ov -format UDZO -volname MarkType -srcfolder "$staging" "$dmg"
+if [[ -n ${MARKTYPE_NOTARY_PROFILE:-} ]]; then
+  : "${MARKTYPE_MACOS_IDENTITY:?Set your Developer ID Application identity for notarization}"
+  codesign --timestamp --sign "$MARKTYPE_MACOS_IDENTITY" "$dmg"
+  xcrun notarytool submit "$dmg" --keychain-profile "$MARKTYPE_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$dmg"
+  xcrun stapler validate "$dmg"
+fi

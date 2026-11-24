@@ -39,6 +39,11 @@
 
 ## 写作与导出
 
+- 双页、实时预览和源码共用 CodeMirror 6，支持跨视图撤销、多光标、代码折叠和查找高亮。
+- 粘贴剪贴板图片会在文档旁的 `assets/` 保存副本，并插入相对链接。未命名文档会先打开保存对话框。
+- 文件在磁盘上变更时，可以重新加载或保留编辑器版本。应用会恢复上次打开的标签、未保存草稿与窗口位置和尺寸。
+- 在文件树上右键即可新建、重命名、移到回收站，或在系统文件管理器中显示。`Ctrl+Shift+F` 搜索工作区文本。
+- Mermaid 图表支持离线渲染。导出 HTML 时可选择内联本地图片。如果系统已安装 Pandoc，也可导出 Word 和 LaTeX。
 - 内置 KaTeX 和 `mhchem`。数学公式、化学式和所需字体均可离线使用。
 - 支持多标签、文件树、文档内查找替换、自动保存、导出 HTML 和通过系统打印对话框保存 PDF。
 - 大文件按窗口载入源码和预览。实时编辑器只绘制视口附近的内容，并把修改范围同步给 Rust 的 Rope 文本缓冲区。
@@ -80,7 +85,9 @@ cargo run --locked --release -- examples/markdown-tour.md
 
 [CI](https://github.com/microcrystallization/marktype/actions/workflows/ci.yml) 运行检查、测试和桌面冒烟测试。[Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) 可手动运行以生成产物。推送与 `Cargo.toml` 中版本一致的新 `v*` 标签，会创建 GitHub Release 并上传安装包和 SHA-256 校验文件。
 
-应用内置 CodeMirror 和 KaTeX。修改实时编辑器后，用 Node.js 24 运行 `npm ci`、`npm run build:live`，并提交更新的离线 bundle。
+应用内置 CodeMirror、KaTeX 和 Mermaid。用 Node.js 24 运行 `npm ci`，通过 `npm run build:live` 和 `npm run build:diagrams` 更新相应的离线资源。
+
+在配置了 Apple Developer ID 和 `notarytool` 认证的 Mac 上，可以给 `scripts/build-macos.sh` 传入 `MARKTYPE_MACOS_IDENTITY` 和 `MARKTYPE_NOTARY_PROFILE`，生成已签名并附带公证票据的 DMG。
 
 ## 许可证
 

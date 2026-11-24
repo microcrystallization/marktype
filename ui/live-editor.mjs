@@ -1,13 +1,17 @@
-import { Compartment, EditorState, RangeSet, StateEffect, StateField, Transaction } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, gutterLineClass, keymap, lineNumbers } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo, undo } from "@codemirror/commands";
+import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, foldGutter, foldKeymap, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { markdown } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
 import { tags } from "@lezer/highlight";
 import { createWidgetRenderer, enableSourceReveal, RenderedMarkdown } from "./live-widgets.mjs";
 
 const highlight = HighlightStyle.define([
+  { tag: tags.heading, class: "hl-md-heading" },
+  { tag: [tags.emphasis, tags.strong, tags.strikethrough], class: "hl-md-emphasis" },
+  { tag: tags.monospace, class: "hl-md-code" },
   { tag: tags.keyword, class: "hl-kw" },
   { tag: [tags.string, tags.regexp], class: "hl-str" },
   { tag: [tags.number, tags.atom, tags.bool], class: "hl-num" },
@@ -151,6 +155,10 @@ const refreshWidgets = StateEffect.define();
 
 function blockKind(state, node) {
   if (node.name === "Table") return "table";
+  if (node.name === "FencedCode") {
+    const info = node.getChild("CodeInfo");
+    if (info && state.sliceDoc(info.from, info.to).trim().split(/\s/, 1)[0].toLowerCase() === "mermaid") return "diagram";
+  }
   if (node.name === "Blockquote" && alertMarker.test(state.sliceDoc(node.from, state.doc.lineAt(node.from).to))) {
     return "callout";
   }
@@ -350,11 +358,26 @@ function loadCode(info) {
 }
 
 // CodeMirror renders only the visible lines. Rust keeps the canonical Rope and on-disk state.
-function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets, onEdit, onCursor, showLineNumbers, startLine }) {
+const nativeChange = Annotation.define();
+const showMatches = StateEffect.define();
+const matchesField = StateField.define({
+  create: () => Decoration.none,
+  update(matches, transaction) {
+    if (transaction.docChanged) matches = Decoration.none;
+    for (const effect of transaction.effects) if (effect.is(showMatches)) matches = effect.value;
+    return matches;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+const matchMark = Decoration.mark({ class: "cm-marktype-match" });
+
+function create(parent, { text, mode, label, renderMath, renderWidgets, hydrateWidgets, onEdit, onCursor, onScroll, showLineNumbers, startLine }) {
   const readOnly = new Compartment();
   const gutter = new Compartment();
+  const visual = new Compartment();
   const renderer = createWidgetRenderer(renderWidgets, hydrateWidgets);
   const blockField = blockWidgets(renderMath, renderer);
+  const visualExtensions = [blockField, inlinePreview(renderMath, renderer, blockField)];
   let firstLine = startLine;
   let showNumbers = showLineNumbers;
   const gutterExtension = () => showNumbers ? lineNumbers({ formatNumber: (n) => String(n + firstLine) }) : [];
@@ -365,13 +388,16 @@ function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets
       extensions: [
         markdown({ extensions: [GFM, math], codeLanguages: loadCode }),
         syntaxHighlighting(highlight),
-        history(), keymap.of([...defaultKeymap, ...historyKeymap]), drawSelection(),
+        history(), drawSelection(), closeBrackets(), foldGutter(), matchesField,
+        EditorState.allowMultipleSelections.of(true),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap.filter((binding) => binding.key !== "Mod-/"),
+          ...historyKeymap, ...foldKeymap, indentWithTab]),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
         readOnly.of(EditorState.readOnly.of(false)), gutter.of(gutterExtension()),
-        blockField, inlinePreview(renderMath, renderer, blockField),
+        visual.of(mode === "live" ? visualExtensions : []),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged && update.transactions.some((tx) => tx.annotation(Transaction.addToHistory) !== false)) {
+          if (update.docChanged && update.transactions.some((tx) => !tx.annotation(nativeChange))) {
             // Combine multi-cursor transactions into one UTF-16 range on the native Rope.
             let start = -1, end, insertedStart, insertedEnd;
             update.changes.iterChanges((fromA, toA, fromB, toB) => {
@@ -393,9 +419,56 @@ function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets
       ],
     }),
   });
+  view.scrollDOM.addEventListener("scroll", () => onScroll(view.scrollDOM));
+  function offset(line, column) {
+    const { from, text } = view.state.doc.line(Math.max(1, Math.min(line + 1, view.state.doc.lines)));
+    let units = 0;
+    for (const char of text) {
+      if (column-- <= 0) break;
+      units += char.length;
+    }
+    return from + units;
+  }
   return {
     get text() { return view.state.doc.toString(); },
     get selection() { return view.state.selection.main; },
+    get scrollElement() { return view.scrollDOM; },
+    get readOnly() { return view.state.readOnly; },
+    undo() { undo(view); },
+    redo() { redo(view); },
+    setMode(next) {
+      if (mode === next) return;
+      mode = next;
+      view.dispatch({ effects: visual.reconfigure(mode === "live" ? visualExtensions : []), scrollIntoView: true });
+    },
+    applyText(text) {
+      if (view.state.doc.toString() === text) return;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: nativeChange.of(true) });
+    },
+    setMatches(matches, firstLine) {
+      const ranges = [];
+      for (const match of matches) {
+        const line = match.line - firstLine;
+        const end = (match.endLine ?? match.line) - firstLine;
+        if (line < 0 || end >= view.state.doc.lines) continue;
+        const from = offset(line, match.col);
+        const to = offset(end, match.endCol);
+        if (to > from) ranges.push(matchMark.range(from, to));
+      }
+      const decorations = Decoration.set(ranges, true);
+      if (decorations.size || view.state.field(matchesField).size) view.dispatch({ effects: showMatches.of(decorations) });
+    },
+    lineAtScroll(pixel) {
+      const block = view.lineBlockAtHeight(pixel);
+      return view.state.doc.lineAt(block.from).number - 1 +
+        Math.min(1, Math.max(0, (pixel - block.top) / Math.max(1, block.height)));
+    },
+    scrollAtLine(line) {
+      const whole = Math.floor(line);
+      const from = offset(whole, 0);
+      const block = view.lineBlockAt(from);
+      return block.top + (line - whole) * block.height;
+    },
     slice(from, to) { return view.state.sliceDoc(from, to); },
     lineStart(position) { return view.state.doc.lineAt(position).from; },
     replace(from, to, insert, anchor = from + insert.length, head = anchor) {
@@ -412,15 +485,6 @@ function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets
       view.dispatch({ effects: gutter.reconfigure(gutterExtension()) });
     },
     select(relativeLine, col = 0, relativeEnd = relativeLine, endCol = col, focus = false) {
-      const offset = (line, column) => {
-        const { from, text } = view.state.doc.line(Math.max(1, Math.min(line + 1, view.state.doc.lines)));
-        let units = 0;
-        for (const char of text) {
-          if (column-- <= 0) break;
-          units += char.length;
-        }
-        return from + units;
-      };
       view.dispatch({
         selection: { anchor: offset(relativeLine, col), head: offset(relativeEnd, endCol) },
         scrollIntoView: true,
@@ -439,4 +503,4 @@ function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets
   };
 }
 
-window.MTLiveEditor = { create };
+window.MTEditor = { create };

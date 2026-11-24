@@ -23,6 +23,24 @@ pub enum ThemePreset {
     Sepia,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowGeometry {
+    pub size: [f64; 2],
+    pub position: Option<[i32; 2]>,
+    pub maximized: bool,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self {
+            size: [1420.0, 900.0],
+            position: None,
+            maximized: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -52,6 +70,7 @@ pub struct Settings {
     // Recent documents & workspace
     pub recent_files: Vec<String>,
     pub last_folder: Option<String>,
+    pub window_geometry: WindowGeometry,
 }
 
 impl Default for Settings {
@@ -81,12 +100,15 @@ impl Default for Settings {
             wallpaper_theme_colors: true,
             recent_files: Vec::new(),
             last_folder: None,
+            window_geometry: WindowGeometry::default(),
         }
     }
 }
 
 impl Settings {
     pub fn clamp(&mut self) {
+        self.window_geometry.size[0] = self.window_geometry.size[0].clamp(820.0, 10000.0);
+        self.window_geometry.size[1] = self.window_geometry.size[1].clamp(560.0, 10000.0);
         self.font_size = self.font_size.clamp(10.0, 28.0);
         self.preview_max_width = self.preview_max_width.clamp(560, 1400);
         self.line_height = self.line_height.clamp(1.3, 2.2);
@@ -144,7 +166,5 @@ pub fn save(settings: &Settings) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create config dir: {e}"))?;
     }
-    let json = serde_json::to_vec_pretty(settings)
-        .map_err(|e| format!("Cannot serialize settings: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("Cannot save settings: {e}"))
+    crate::storage::atomic_json(&path, settings).map_err(|e| format!("Cannot save settings: {e}"))
 }

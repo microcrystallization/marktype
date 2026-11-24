@@ -50,7 +50,6 @@
     renderTabs();
     if (state.doc) {
       updateStatsUI(state.doc.stats);
-      if (!state.live) updateCursorStatus();
       updateLoadMoreVisibility();
       updateLargeBar();
     } else {
@@ -79,7 +78,6 @@
     prevText: "",
     windowStartLine: 0,
     windowEndLine: 0,
-    sourceContext: "",
     totalLines: 1,
     totalBlocks: 0,
     loadedBlocks: 0,
@@ -95,7 +93,9 @@
     findRegex: false,
     findMatches: [],
     findIndex: -1,
-    live: null,
+    editor: null,
+    editorReadOnly: false,
+    editorTarget: null,
     sourceRequest: null,
     pendingSourceEdit: false,
     pendingEdits: 0,
@@ -188,10 +188,7 @@
   const elSettingsView = $("settings-view");
   const elPanesWrap = $("panes-wrap");
   const elSourcePane = $("source-pane");
-  const elSourceHighlight = $("source-highlight");
-  const sourceHighlight = new window.MTSourceHighlight(elSourceHighlight);
-  const elSourceEditor = $("source-editor");
-  const elLiveHost = $("live-editor-host");
+  const elEditorHost = $("editor-host");
   const elSplitDivider = $("split-divider");
   const elPreviewPane = $("preview-pane");
   const elPreviewDoc = $("preview-doc");
@@ -204,6 +201,14 @@
   const elFindCount = $("find-count");
   const elToast = $("toast");
   const elCloseDialog = $("close-dialog");
+  const externalDialog = $("external-change-dialog");
+  externalDialog.addEventListener("cancel", (event) => event.preventDefault());
+  for (const [id, reload] of [["external-keep", false], ["external-reload", true]]) {
+    $(id).onclick = () => {
+      send({ cmd: "resolveExternalChange", docId: externalDialog.dataset.docId, reload });
+      externalDialog.close();
+    };
+  }
 
   const elWpBlurPrev = $("wp-blur-prev");
   const elWpBlurCurr = $("wp-blur-curr");
@@ -236,44 +241,6 @@
     return count;
   }
 
-  function computeMinimalDiff(oldStr, newStr) {
-    if (oldStr === newStr) return null;
-    const oldLen = oldStr.length;
-    const newLen = newStr.length;
-    let prefix = 0;
-    const minLen = Math.min(oldLen, newLen);
-    while (prefix < minLen && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) {
-      prefix++;
-    }
-    // Never split a UTF-16 surrogate pair
-    if (prefix > 0 && prefix < oldLen) {
-      const c = oldStr.charCodeAt(prefix - 1);
-      if (c >= 0xd800 && c <= 0xdbff) prefix--;
-    }
-    let oldEnd = oldLen;
-    let newEnd = newLen;
-    while (
-      oldEnd > prefix &&
-      newEnd > prefix &&
-      oldStr.charCodeAt(oldEnd - 1) === newStr.charCodeAt(newEnd - 1)
-    ) {
-      oldEnd--;
-      newEnd--;
-    }
-    if (oldEnd < oldLen) {
-      const c = oldStr.charCodeAt(oldEnd);
-      if (c >= 0xdc00 && c <= 0xdfff) {
-        oldEnd++;
-        newEnd++;
-      }
-    }
-    return {
-      startChar: utf16ToScalarCount(oldStr, prefix),
-      endChar: utf16ToScalarCount(oldStr, oldEnd),
-      text: newStr.slice(prefix, newEnd),
-    };
-  }
-
   let toastTimer = null;
   function showToast(msg) {
     if (!msg) return;
@@ -281,13 +248,6 @@
     elToast.classList.remove("hidden");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => elToast.classList.add("hidden"), 2600);
-  }
-
-  // Reuse line elements so typing updates the changed tokens rather than the whole overlay.
-  function updateSourceOverlayAndGutter() {
-    sourceHighlight.update(elSourceEditor.value, state.sourceContext, state.windowStartLine === 0);
-    elSourceHighlight.style.setProperty("--source-first-line", state.windowStartLine);
-    mirrorSourceScroll();
   }
 
   // Preview blocks retain their DOM identity as long as their backend ID survives.
@@ -302,6 +262,7 @@
       node.renderedHtml = block.html;
       content.innerHTML = block.html;
       hydrateMath(content);
+      window.MTDiagrams.observe(content);
     }
   }
 
@@ -434,7 +395,7 @@
     }
     if (patch.refreshPreview) {
       state.previewNeedsRefresh = true;
-      state.live?.invalidateWidgets();
+      state.editor?.invalidateWidgets();
     }
     if (state.previewNeedsRefresh) requestPreviewBlocks();
     else if (patch.outlineChanged) updatePreviewToc();
@@ -477,89 +438,94 @@
     }
   }
 
-  let liveBundle;
-  function loadLiveBundle() {
-    if (!liveBundle) liveBundle = new Promise((resolve, reject) => {
+  let editorBundle;
+  function loadEditorBundle() {
+    if (!editorBundle) editorBundle = new Promise((resolve, reject) => {
       const script = document.createElement("script");
       script.src = "/vendor/codemirror.js";
       script.onload = resolve;
       script.onerror = () => {
         script.remove();
-        liveBundle = null;
-        reject(new Error("Live Preview could not load"));
+        editorBundle = null;
+        reject(new Error("The editor could not load"));
       };
       document.head.append(script);
     });
-    return liveBundle;
+    return editorBundle;
   }
 
-  function mountLiveEditor(focus = false, restoreSourceCursor = false) {
-    if (!state.doc || state.settings?.viewMode !== "live") return;
-    if (!window.MTLiveEditor) {
+  function mountEditor(focus = false) {
+    if (!state.doc || !state.settings) return;
+    if (!window.MTEditor) {
       const doc = state.doc;
-      void loadLiveBundle().then(() => {
-        if (state.doc === doc && !state.live) mountLiveEditor(focus, true);
+      void loadEditorBundle().then(() => {
+        if (state.doc === doc) mountEditor(focus);
       }).catch((error) => showToast(error.message));
       return;
     }
-    if (!state.live) {
+    if (!state.editor) {
       const docId = state.activeTabId;
-      state.live = window.MTLiveEditor.create(elLiveHost, {
+      state.editor = window.MTEditor.create(elEditorHost, {
         text: state.prevText,
+        mode: state.settings.viewMode,
         label: t("editorPlaceholder"),
         renderMath: renderKatexCached,
         renderWidgets: (fragments) => renderLiveWidgets(docId, fragments),
-        hydrateWidgets: hydrateMath,
+        hydrateWidgets(element) {
+          hydrateMath(element);
+          return window.MTDiagrams.render(element);
+        },
         showLineNumbers: state.settings.showLineNumbers,
         startLine: state.windowStartLine,
+        onScroll: syncScrollFrom,
         onEdit(startChar, endChar, text, lines) {
           state.windowEndLine = state.windowStartLine + lines;
-          state.previewNeedsRefresh = true;
-          sendEdit(state.windowStartLine, { startChar, endChar, text }, true);
+          const deferPreview = state.settings.viewMode !== "split";
+          if (deferPreview) state.previewNeedsRefresh = true;
+          sendEdit(state.windowStartLine, { startChar, endChar, text }, deferPreview);
         },
         onCursor(line, prefix) {
           state.activeLine = state.windowStartLine + line - 1;
           const col = utf16ToScalarCount(prefix, prefix.length) + 1;
           $("st-cursor").textContent = t("stCursor", { ln: state.activeLine + 1, col });
           updateActiveBlockHighlight();
+          if (state.settings.typewriterMode && state.editor) {
+            const editor = state.editor;
+            requestAnimationFrame(() => {
+              if (state.editor !== editor) return;
+              const scroll = editor.scrollElement;
+              setSyncedScroll(scroll, Math.max(0, editor.scrollAtLine(line - 1) - scroll.clientHeight * 0.42));
+            });
+          }
         },
       });
-      if (restoreSourceCursor) {
-        const prefix = elSourceEditor.value.slice(0, elSourceEditor.selectionStart).split("\n");
-        state.live.select(prefix.length - 1, Array.from(prefix.at(-1)).length);
-      }
     }
-    state.live.configureGutter(state.settings.showLineNumbers, state.windowStartLine);
-    state.live.setReadOnly(elSourceEditor.readOnly);
-    if (focus) state.live.focus();
+    state.editor.setMode(state.settings.viewMode);
+    state.editor.configureGutter(state.settings.showLineNumbers, state.windowStartLine);
+    state.editor.setReadOnly(state.editorReadOnly);
+    if (state.editorTarget) applySourceSelection(state.editorTarget);
+    if (focus) state.editor.focus();
   }
 
-  function unmountLiveEditor(keepText = false) {
-    if (!state.live) return;
-    if (keepText) {
-      const { text, selection } = state.live;
-      state.prevText = text;
-      elSourceEditor.value = text;
-      elSourceEditor.setSelectionRange(selection.from, selection.to);
-    }
-    state.live.destroy();
-    state.live = null;
+  function unmountEditor() {
+    state.editor?.destroy();
+    state.editor = null;
   }
 
   function setSourceReadOnly(value) {
-    elSourceEditor.readOnly = value;
-    state.live?.setReadOnly(value);
+    state.editorReadOnly = value;
+    state.editor?.setReadOnly(value);
   }
 
   function sourceRequestOptions() {
     return { startLine: state.windowStartLine, count: state.largeMode ? 600 : null };
   }
 
-  function sendEdit(baseLine, diff, utf16 = false) {
+  function sendEdit(baseLine, diff, deferPreview) {
     if (!state.doc) return;
     state.pendingEdits++;
     invalidateSearch();
-    send({ cmd: "edit", docId: state.activeTabId, baseLine, ...diff, utf16 });
+    send({ cmd: "edit", docId: state.activeTabId, baseLine, ...diff, utf16: true, deferPreview });
   }
 
   // ===== Theme & Kite Wallpaper Application =====
@@ -695,8 +661,7 @@
   function applySettingsUI(s) {
     if (!s) return;
     const modeChanged = state.settings?.viewMode !== s.viewMode;
-    const editorFocused = document.activeElement === elSourceEditor || elLiveHost.contains(document.activeElement);
-    if (s.viewMode !== "live") unmountLiveEditor(true);
+    const editorFocused = elEditorHost.contains(document.activeElement);
     state.settings = s;
     const root = document.documentElement.style;
 
@@ -707,7 +672,6 @@
     document.body.classList.toggle("focus-mode", !!s.focusMode);
     document.body.classList.toggle("reduce-motion", !!s.reduceMotion);
 
-    elSourcePane.classList.toggle("show-line-numbers", s.showLineNumbers);
     elSidebar.classList.toggle("collapsed", !s.sidebarOpen);
     $("btn-sidebar").classList.toggle("active", !!s.sidebarOpen);
 
@@ -729,14 +693,7 @@
         requestPreviewBlocks();
       }
     }
-    if (s.viewMode === "live") {
-      if (!state.doc && !window.MTLiveEditor) void loadLiveBundle().catch((error) => showToast(error.message));
-      mountLiveEditor(modeChanged && editorFocused, modeChanged);
-    } else if (modeChanged && state.doc) {
-      updateSourceOverlayAndGutter();
-      updateCursorStatus(false);
-      if (editorFocused) elSourceEditor.focus({ preventScroll: true });
-    }
+    mountEditor(modeChanged && editorFocused);
 
     // Toolbar toggles
     $("btn-focus").classList.toggle("active", !!s.focusMode);
@@ -791,13 +748,17 @@
     if (state.doc && active && state.doc.path !== active.path) {
       state.doc.path = active.path;
       state.previewNeedsRefresh = true;
-      state.live?.invalidateWidgets();
+      state.editor?.invalidateWidgets();
       requestPreviewBlocks();
     }
     renderTabs();
   }
 
   function renderTabs() {
+    for (const id of ["btn-export-docx", "btn-export-tex"]) {
+      $(id).disabled = !state.activeTabId || !state.pandocAvailable;
+      $(id).title = state.pandocAvailable ? "" : t("exportNeedsPandoc");
+    }
     for (const id of ["btn-save", "btn-save-as", "btn-export", "btn-print", "menu-close-tab", "menu-find", "menu-replace"]) {
       $(id).disabled = !state.activeTabId;
     }
@@ -922,6 +883,7 @@
     outlineRows.children[next - outlineFirst]?.focus();
   });
 
+  const collapsedFolders = new Set();
   function renderFileTree() {
     elFileTree.innerHTML = "";
     if (!state.fileTree) {
@@ -943,16 +905,27 @@
         if (!hasMatch) return;
         const row = document.createElement("button");
         row.className = "file-row dir";
+        row.dataset.workspacePath = node.path;
+        row.dataset.workspaceName = node.name;
         row.style.paddingLeft = `${8 + depth * 12}px`;
-        row.textContent = `▾ ${node.name}`;
+        const expanded = Boolean(query) || !collapsedFolders.has(node.path);
+        row.textContent = `${expanded ? "▾" : "▸"} ${node.name}`;
+        row.setAttribute("aria-expanded", String(expanded));
+        row.onclick = () => {
+          if (expanded) collapsedFolders.add(node.path);
+          else collapsedFolders.delete(node.path);
+          renderFileTree();
+        };
         elFileTree.appendChild(row);
-        for (const child of children) {
+        for (const child of expanded ? children : []) {
           renderNode(child, depth + 1);
         }
       } else {
         if (query && !node.name.toLowerCase().includes(query)) return;
         const row = document.createElement("button");
         row.className = "file-row" + (activePath === node.path ? " active" : "");
+        row.dataset.workspacePath = node.path;
+        row.dataset.workspaceName = node.name;
         row.style.paddingLeft = `${12 + depth * 12}px`;
         row.textContent = `📄 ${node.name}`;
         row.title = node.path;
@@ -980,7 +953,8 @@
   }
 
   function loadDocumentSnapshot(doc) {
-    unmountLiveEditor();
+    unmountEditor();
+    state.editorTarget = null;
     state.doc = doc;
     state.sourceRequest = null;
     state.pendingSourceEdit = false;
@@ -990,7 +964,7 @@
     state.previewStart = 0;
     state.previewTarget = null;
     elOutlineList.scrollTop = 0;
-    elSourceEditor.readOnly = false;
+    setSourceReadOnly(false);
     invalidateSearch();
     if (!doc) {
       elEmptyView.classList.remove("hidden");
@@ -1016,32 +990,30 @@
       text: doc.text || "",
       contextLine: doc.contextLine,
     });
-    elSourceEditor.setSelectionRange(0, 0);
-    setSyncedScroll(elSourceEditor, 0);
     setSyncedScroll(elPreviewPane, 0);
     replacePreviewBlocks(doc.blocks || []);
     renderOutline();
     updateStatsUI(doc.stats);
     updateLargeBar();
     renderFileTree();
-    if (!state.live) updateCursorStatus();
+    updateActiveBlockHighlight();
   }
 
-  function applySourceWindow(source) {
-    const liveFocused = elLiveHost.contains(document.activeElement);
-    unmountLiveEditor();
+  function applySourceWindow(source, preserveHistory = false) {
+    const reuse = preserveHistory && state.editor && state.windowStartLine === source.startLine;
+    const editorFocused = elEditorHost.contains(document.activeElement);
+    if (!reuse) unmountEditor();
     state.windowStartLine = source.startLine;
     state.windowEndLine = source.endLine;
     state.totalLines = source.totalLines;
-    state.sourceContext = source.contextLine ? window.MTSourceHighlight.context(source.contextLine) : "";
     state.prevText = source.text;
-    if (elSourceEditor.value !== source.text) {
-      const position = Math.min(elSourceEditor.selectionStart, source.text.length);
-      elSourceEditor.value = source.text;
-      elSourceEditor.setSelectionRange(position, position);
+    if (reuse) {
+      state.editor.applyText(source.text);
+    } else {
+      state.editorTarget = { line: source.startLine, focus: editorFocused };
     }
-    if (state.settings?.viewMode === "live") mountLiveEditor(liveFocused);
-    else updateSourceOverlayAndGutter();
+    mountEditor();
+    state.editor?.setMatches(state.findMatches, state.windowStartLine);
     updateLargeBar();
   }
 
@@ -1055,20 +1027,6 @@
   }
 
   // ===== Cursor, Active Block, Jump & Bidirectional Sync Scroll =====
-  function updateCursorStatus(allowTypewriter = true) {
-    const pos = elSourceEditor.selectionStart || 0;
-    const before = elSourceEditor.value.slice(0, pos);
-    const lines = before.split("\n");
-    const relLine = lines.length - 1;
-    const col = utf16ToScalarCount(lines.at(-1), lines.at(-1).length) + 1;
-    state.activeLine = state.windowStartLine + relLine;
-    $("st-cursor").textContent = t("stCursor", { ln: state.activeLine + 1, col });
-    updateActiveBlockHighlight();
-    if (allowTypewriter && state.settings?.typewriterMode && state.settings.viewMode !== "live") {
-      elSourceEditor.scrollTop = Math.max(0, sourceLineTop(relLine) - elSourceEditor.clientHeight * 0.42);
-    }
-  }
-
   let activePreviewBlock;
   let activeOutlineItem;
   function updateActiveBlockHighlight() {
@@ -1110,30 +1068,6 @@
     const block = blocks[index];
     if (block && line < Number(block.dataset.endLine)) return block;
     return blocks[index + 1] || block || null;
-  }
-
-  function sourceLineTop(index) {
-    const lines = elSourceHighlight.children;
-    const first = lines[0]?.offsetTop || 0;
-    if (index < lines.length) return (lines[index]?.offsetTop || first) - first;
-    const last = lines[lines.length - 1];
-    return last ? last.offsetTop + last.offsetHeight - first : 0;
-  }
-
-  function sourceLineAtPixel(pixel) {
-    const length = elSourceHighlight.children.length;
-    const origin = elSourceHighlight.children[0]?.offsetTop || 0;
-    const index = Math.max(0, indexAtOrBefore(length, (i) => elSourceHighlight.children[i].offsetTop - origin <= pixel));
-    const top = sourceLineTop(index);
-    const height = Math.max(1, sourceLineTop(index + 1) - top);
-    return state.windowStartLine + index + Math.min(1, Math.max(0, (pixel - top) / height));
-  }
-
-  function sourcePixelAtLine(line) {
-    const index = Math.max(0, line - state.windowStartLine);
-    const floor = Math.floor(index);
-    const top = sourceLineTop(floor);
-    return top + (sourceLineTop(floor + 1) - top) * (index - floor);
   }
 
   function previewAnchor(index) {
@@ -1178,37 +1112,29 @@
     if (Math.abs(element.scrollTop - old) > 0.5) expectedScroll.set(element, element.scrollTop);
   }
 
-  function mirrorSourceScroll() {
-    elSourceHighlight.scrollTop = elSourceEditor.scrollTop;
-    elSourceHighlight.scrollLeft = elSourceEditor.scrollLeft;
-  }
-
   function syncScrollFrom(element) {
     const expected = expectedScroll.get(element);
     expectedScroll.delete(element);
     if (expected !== undefined && Math.abs(element.scrollTop - expected) < 1) return;
-    if (!state.doc || !state.settings?.syncScroll || state.settings.viewMode !== "split") return;
+    if (!state.editor || !state.settings?.syncScroll || state.settings.viewMode !== "split") return;
     scrollSource = element;
     if (scrollFrame) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
-      if (!state.doc || !state.settings?.syncScroll || state.settings.viewMode !== "split") return;
-      if (scrollSource === elSourceEditor) {
-        const line = sourceLineAtPixel(elSourceEditor.scrollTop);
-        showPreviewLine(line);
-      } else {
+      const editor = state.editor;
+      if (!editor || !state.settings?.syncScroll || state.settings.viewMode !== "split") return;
+      const scroll = editor.scrollElement;
+      if (scrollSource === scroll) {
+        showPreviewLine(state.windowStartLine + editor.lineAtScroll(scroll.scrollTop));
+      } else if (scrollSource === elPreviewPane) {
         const line = translatePreview(elPreviewPane.scrollTop, "y", "line");
         if (line >= state.windowStartLine && line < state.windowEndLine) {
-          setSyncedScroll(elSourceEditor, sourcePixelAtLine(line));
+          setSyncedScroll(scroll, editor.scrollAtLine(line - state.windowStartLine));
         }
       }
     });
   }
 
-  elSourceEditor.addEventListener("scroll", () => {
-    mirrorSourceScroll();
-    syncScrollFrom(elSourceEditor);
-  });
   elPreviewPane.addEventListener("scroll", () => {
     if (elPreviewPane.scrollTop + elPreviewPane.clientHeight >= elPreviewPane.scrollHeight - 400) {
       requestPreviewBlocks();
@@ -1216,40 +1142,14 @@
     syncScrollFrom(elPreviewPane);
   });
 
-  function scalarToUtf16(text, count) {
-    let units = 0;
-    for (const char of text) {
-      if (count-- <= 0) break;
-      units += char.length;
-    }
-    return units;
-  }
-
-  function sourceOffset(line, col) {
-    const text = elSourceEditor.value;
-    let start = 0;
-    for (let i = state.windowStartLine; i < line; i++) {
-      const newline = text.indexOf("\n", start);
-      if (newline < 0) return text.length;
-      start = newline + 1;
-    }
-    const end = text.indexOf("\n", start);
-    return start + scalarToUtf16(text.slice(start, end < 0 ? text.length : end), col);
-  }
-
   function applySourceSelection(target) {
-    if (state.live) {
-      state.live.select(target.line - state.windowStartLine, target.col,
-        (target.endLine ?? target.line) - state.windowStartLine, target.endCol, target.focus);
+    if (!state.editor) {
+      state.editorTarget = target;
       return;
     }
-    const start = sourceOffset(target.line, target.col || 0);
-    const end = sourceOffset(target.endLine ?? target.line, target.endCol ?? target.col ?? 0);
-    if (target.focus) elSourceEditor.focus({ preventScroll: true });
-    elSourceEditor.setSelectionRange(start, end);
-    setSyncedScroll(elSourceEditor, Math.max(0, sourcePixelAtLine(target.line) - 36));
-    state.activeLine = target.line;
-    updateCursorStatus(false);
+    state.editorTarget = null;
+    state.editor.select(target.line - state.windowStartLine, target.col,
+      (target.endLine ?? target.line) - state.windowStartLine, target.endCol, target.focus);
   }
 
   function requestSourceWindow(startLine, target = null) {
@@ -1273,147 +1173,45 @@
     updateActiveBlockHighlight();
   }
 
-  elSourceEditor.addEventListener("input", () => {
-    const next = elSourceEditor.value;
-    const diff = computeMinimalDiff(state.prevText, next);
-    state.prevText = next;
-    state.windowEndLine = state.windowStartLine + next.split("\n").length;
-    if (diff) sendEdit(state.windowStartLine, diff);
-    updateSourceOverlayAndGutter();
-    updateCursorStatus();
-  });
-
-  elSourceEditor.addEventListener("keyup", () => updateCursorStatus());
-  elSourceEditor.addEventListener("click", () => updateCursorStatus());
-
-  // ===== Smart Typora Editing Helpers (Auto-Pair, Smart Lists, Tab, URL Paste) =====
-  const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"', "`": "`", "$": "$" };
-
-  function replaceEditorSelection(newText, selStartOffset, selEndOffset) {
-    const s = elSourceEditor.selectionStart;
-    const e = elSourceEditor.selectionEnd;
-    elSourceEditor.setRangeText(newText, s, e, "end");
-    if (selStartOffset !== undefined) {
-      elSourceEditor.selectionStart = s + selStartOffset;
-      elSourceEditor.selectionEnd = s + (selEndOffset ?? selStartOffset);
-    }
-    elSourceEditor.dispatchEvent(new Event("input"));
-  }
-
-  elSourceEditor.addEventListener("keydown", (e) => {
-    if (e.isComposing || elSourceEditor.readOnly) return;
-    const s = elSourceEditor.selectionStart;
-    const end = elSourceEditor.selectionEnd;
-    const val = elSourceEditor.value;
-
-    // Tab / Shift+Tab indentation
-    if (e.key === "Tab") {
-      e.preventDefault();
-      if (s === end && !e.shiftKey) {
-        replaceEditorSelection("  ", 2, 2);
-      } else {
-        const lineStart = val.lastIndexOf("\n", s - 1) + 1;
-        const selected = val.slice(lineStart, end);
-        const updated = e.shiftKey
-          ? selected.replace(/^  /gm, "")
-          : selected.replace(/^/gm, "  ");
-        elSourceEditor.setRangeText(updated, lineStart, end, "select");
-        elSourceEditor.dispatchEvent(new Event("input"));
-      }
+  let imagePaste;
+  document.addEventListener("paste", (event) => {
+    if (!event.target.closest("#editor-host .cm-content") || !state.editor) return;
+    const image = Array.from(event.clipboardData?.files ?? []).find((file) => file.type.startsWith("image/")) ??
+      Array.from(event.clipboardData?.items ?? []).find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+    if (!image) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!state.doc || state.pendingSourceEdit || state.sourceRequest) return;
+    if (image.size > 32 * 1024 * 1024) {
+      showToast("Clipboard image exceeds 32 MiB");
       return;
     }
+    const { from, to } = state.editor.selection;
+    const paste = { doc: state.doc, id: state.activeTabId, request: ++requestSequence, from, to };
+    imagePaste = paste;
+    state.pendingSourceEdit = true;
+    setSourceReadOnly(true);
+    const reader = new FileReader();
+    reader.onerror = () => {
+      if (imagePaste !== paste || state.doc !== paste.doc) return;
+      imagePaste = null;
+      endSourceAction();
+      showToast("Cannot read clipboard image");
+    };
+    reader.onload = () => {
+      if (imagePaste !== paste || state.doc !== paste.doc) return;
+      const data = String(reader.result);
+      send({ cmd: "saveClipboardImage", docId: paste.id, request: paste.request, encoded: data.slice(data.indexOf(",") + 1) });
+    };
+    reader.readAsDataURL(image);
+  }, true);
 
-    // Auto-pair brackets / quotes / $
-    if (!e.ctrlKey && !e.altKey && !e.metaKey && PAIRS[e.key]) {
-      const close = PAIRS[e.key];
-      if (s !== end) {
-        e.preventDefault();
-        const sel = val.slice(s, end);
-        replaceEditorSelection(e.key + sel + close, 1, 1 + sel.length);
-        return;
-      }
-      // Skip over existing closing char
-      if (e.key === close && val[s] === close) {
-        e.preventDefault();
-        elSourceEditor.selectionStart = elSourceEditor.selectionEnd = s + 1;
-        return;
-      }
-    }
-
-    // Smart Enter for lists & blockquotes
-    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey) {
-      const lineStart = val.lastIndexOf("\n", s - 1) + 1;
-      const curLine = val.slice(lineStart, s);
-      const taskM = curLine.match(/^(\s*[-*+]\s+)\[[ xX]\]\s+(.*)$/);
-      const ulM = curLine.match(/^(\s*[-*+]\s+)(.*)$/);
-      const olM = curLine.match(/^(\s*)(\d+)(\.\s+)(.*)$/);
-      const qtM = curLine.match(/^(\s*>\s+)(.*)$/);
-
-      if (taskM) {
-        e.preventDefault();
-        if (!taskM[2].trim()) {
-          elSourceEditor.setRangeText("\n", lineStart, s, "end");
-        } else {
-          replaceEditorSelection("\n" + taskM[1] + "[ ] ");
-        }
-        elSourceEditor.dispatchEvent(new Event("input"));
-      } else if (ulM) {
-        e.preventDefault();
-        if (!ulM[2].trim()) {
-          elSourceEditor.setRangeText("\n", lineStart, s, "end");
-        } else {
-          replaceEditorSelection("\n" + ulM[1]);
-        }
-        elSourceEditor.dispatchEvent(new Event("input"));
-      } else if (olM) {
-        e.preventDefault();
-        if (!olM[4].trim()) {
-          elSourceEditor.setRangeText("\n", lineStart, s, "end");
-        } else {
-          replaceEditorSelection(`\n${olM[1]}${Number(olM[2]) + 1}${olM[3]}`);
-        }
-        elSourceEditor.dispatchEvent(new Event("input"));
-      } else if (qtM && qtM[2].trim()) {
-        e.preventDefault();
-        replaceEditorSelection("\n" + qtM[1]);
-      }
-    }
-  });
-
-  // Paste URL over selected text -> [text](url)
-  elSourceEditor.addEventListener("paste", (e) => {
-    const s = elSourceEditor.selectionStart;
-    const end = elSourceEditor.selectionEnd;
-    if (s === end) return;
-    const clip = (e.clipboardData || window.clipboardData).getData("text");
-    if (/^https?:\/\/\S+$/.test(clip.trim())) {
-      e.preventDefault();
-      const sel = elSourceEditor.value.slice(s, end);
-      replaceEditorSelection(`[${sel}](${clip.trim()})`);
-    }
-  });
-
-  // ===== Formatting Commands =====
   function applyFormat(fmt) {
-    if (elSourceEditor.readOnly) return;
-    if (state.live) {
-      const live = state.live;
-      const { from, to } = live.selection;
-      live.focus();
-      formatSelection(fmt, from, to, live.slice(from, to), live.lineStart(from), live.replace);
-      return;
-    }
-    const ta = elSourceEditor;
-    ta.focus();
-    const s = ta.selectionStart;
-    const e = ta.selectionEnd;
-    const lineStart = ta.value.lastIndexOf("\n", s - 1) + 1;
-    formatSelection(fmt, s, e, ta.value.slice(s, e), lineStart,
-      (from, to, value, anchor = from + value.length, head = anchor) => {
-        ta.setRangeText(value, from, to, "end");
-        ta.setSelectionRange(anchor, head);
-        ta.dispatchEvent(new Event("input"));
-      });
+    const editor = state.editor;
+    if (!editor || editor.readOnly) return;
+    const { from, to } = editor.selection;
+    editor.focus();
+    formatSelection(fmt, from, to, editor.slice(from, to), editor.lineStart(from), editor.replace);
   }
 
   function formatSelection(fmt, s, e, sel, lineStart, replace) {
@@ -1576,6 +1374,8 @@
 
   function closeFind() {
     state.findOpen = false;
+    state.findMatches = [];
+    state.editor?.setMatches([], state.windowStartLine);
     clearTimeout(state.searchTimer);
     elFindBar.classList.add("hidden");
   }
@@ -1583,6 +1383,10 @@
   function invalidateSearch() {
     state.searchVersion = null;
     state.findMatches = [];
+    const editor = state.editor;
+    queueMicrotask(() => {
+      if (editor && editor === state.editor && !state.findMatches.length) editor.setMatches([], state.windowStartLine);
+    });
     state.findIndex = -1;
     state.searchRequest = ++requestSequence;
     elFindCount.textContent = "0 / 0";
@@ -1672,6 +1476,7 @@
     const paper = $("print-document");
     paper.innerHTML = html;
     hydrateMath(paper);
+    await window.MTDiagrams.render(paper);
     const images = Array.from(paper.querySelectorAll("img"));
     for (const image of images) image.loading = "eager";
     let timeout;
@@ -1691,7 +1496,11 @@
   $("menu-open-folder").onclick = () => { closeSettings(); send({ cmd: "openFolderDialog" }); };
   $("btn-save").onclick = () => send({ cmd: "save", saveAs: false });
   $("btn-save-as").onclick = () => send({ cmd: "save", saveAs: true });
-  $("btn-export").onclick = () => send({ cmd: "exportHtml" });
+  $("btn-export").onclick = () => $("html-export-dialog").showModal();
+  $("html-export-cancel").onclick = () => $("html-export-dialog").close();
+  $("html-export-form").addEventListener("submit", () => send({ cmd: "exportHtml", inlineImages: $("html-inline-images").checked }));
+  $("btn-export-docx").onclick = () => send({ cmd: "exportPandoc", format: "docx" });
+  $("btn-export-tex").onclick = () => send({ cmd: "exportPandoc", format: "tex" });
   $("btn-print").onclick = requestPrint;
   $("menu-close-tab").onclick = () => {
     if (state.activeTabId) send({ cmd: "closeTab", id: state.activeTabId });
@@ -1724,7 +1533,7 @@
   $("new-file-confirm").onclick = () => {
     const name = $("new-file-input").value.trim();
     if (name) {
-      send({ cmd: "createFileInFolder", name });
+    send({ cmd: "workspaceAction", action: "newDocument", name });
       $("new-file-input").value = "";
       $("new-file-inline").classList.add("hidden");
     }
@@ -1734,6 +1543,85 @@
     if (e.key === "Escape") $("new-file-inline").classList.add("hidden");
   });
   elFileFilter.addEventListener("input", renderFileTree);
+
+  const workspaceMenu = $("workspace-menu");
+  const workspaceItemDialog = $("workspace-item-dialog");
+  const workspaceName = $("workspace-item-name");
+  let workspaceItem;
+  elFileTree.addEventListener("contextmenu", (event) => {
+    const row = event.target.closest("[data-workspace-path]");
+    if (!state.fileTree) return;
+    event.preventDefault();
+    workspaceItem = row ? { path: row.dataset.workspacePath, name: row.dataset.workspaceName } : state.fileTree;
+    for (const action of ["rename", "trash"]) {
+      workspaceMenu.querySelector(`[data-workspace-action="${action}"]`).disabled = !row;
+    }
+    workspaceMenu.classList.remove("hidden");
+    workspaceMenu.style.left = `${Math.min(event.clientX, innerWidth - workspaceMenu.offsetWidth - 8)}px`;
+    workspaceMenu.style.top = `${Math.min(event.clientY, innerHeight - workspaceMenu.offsetHeight - 8)}px`;
+    workspaceMenu.querySelector("button").focus();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!workspaceMenu.contains(event.target)) workspaceMenu.classList.add("hidden");
+  });
+  workspaceMenu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") workspaceMenu.classList.add("hidden");
+  });
+  workspaceMenu.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-workspace-action]");
+    if (!button || !workspaceItem) return;
+    workspaceMenu.classList.add("hidden");
+    const action = button.dataset.workspaceAction;
+    if (action === "reveal") {
+      send({ cmd: "workspaceAction", action, path: workspaceItem.path });
+      return;
+    }
+    workspaceItem.action = action;
+    $("workspace-item-title").textContent = button.textContent;
+    $("workspace-item-confirm").textContent = button.textContent;
+    $("workspace-item-description").textContent = action === "trash" ? workspaceItem.name : "";
+    workspaceName.classList.toggle("hidden", action === "trash");
+    workspaceName.required = action !== "trash";
+    workspaceName.value = action === "rename" ? workspaceItem.name : "";
+    workspaceItemDialog.showModal();
+    if (workspaceName.required) { workspaceName.focus(); workspaceName.select(); }
+  });
+  $("workspace-item-cancel").onclick = () => workspaceItemDialog.close();
+  $("workspace-item-form").addEventListener("submit", () => {
+    if (workspaceItem) send({ cmd: "workspaceAction", action: workspaceItem.action,
+      path: workspaceItem.path, name: workspaceName.value });
+  });
+
+  const workspaceSearch = $("workspace-search-dialog");
+  const workspaceQuery = $("workspace-query");
+  const workspaceResults = $("workspace-search-results");
+  let workspaceSearchTimer, workspaceRequest, workspaceHit;
+  function updateWorkspaceSearch() {
+    clearTimeout(workspaceSearchTimer);
+    const query = workspaceQuery.value;
+    workspaceRequest = ++requestSequence;
+    workspaceResults.replaceChildren();
+    $("workspace-search-status").textContent = query ? t("workspaceSearching") : "";
+    const submit = () => send({ cmd: "workspaceSearch", request: workspaceRequest, query,
+      caseSensitive: $("workspace-case").checked, useRegex: $("workspace-regex").checked });
+    if (query) workspaceSearchTimer = setTimeout(submit, 130);
+    else submit();
+  }
+  function openWorkspaceSearch() {
+    if (!workspaceSearch.open) workspaceSearch.showModal();
+    workspaceQuery.focus();
+    workspaceQuery.select();
+    updateWorkspaceSearch();
+  }
+  workspaceQuery.addEventListener("input", updateWorkspaceSearch);
+  $("workspace-case").addEventListener("change", updateWorkspaceSearch);
+  $("workspace-regex").addEventListener("change", updateWorkspaceSearch);
+  $("workspace-search-close").onclick = () => workspaceSearch.close();
+  workspaceSearch.addEventListener("close", () => {
+    clearTimeout(workspaceSearchTimer);
+    workspaceRequest = ++requestSequence;
+    send({ cmd: "workspaceSearch", request: workspaceRequest, query: "", caseSensitive: false, useRegex: false });
+  });
 
   // ===== Frameless Window Chrome Controls, Drag & Edge Resize =====
   const elTopbar = $("topbar");
@@ -1890,6 +1778,31 @@
   $("font-plus").onclick = () => {
     send({ cmd: "updateSettings", patch: { fontSize: (state.settings?.fontSize || 14) + 1 } });
   };
+  let zoomTimer;
+  let zoomPending;
+  function zoomEditor(size) {
+    zoomPending = Math.max(10, Math.min(28, Math.round(size)));
+    clearTimeout(zoomTimer);
+    zoomTimer = setTimeout(() => {
+      send({ cmd: "updateSettings", patch: { fontSize: zoomPending } });
+      zoomPending = undefined;
+    }, 75);
+  }
+  elPanesWrap.addEventListener("wheel", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || !event.deltaY) return;
+    event.preventDefault();
+    zoomEditor((zoomPending ?? state.settings?.fontSize ?? 14) - Math.sign(event.deltaY));
+  }, { passive: false });
+  let gestureBase = 14;
+  elPanesWrap.addEventListener("gesturestart", (event) => {
+    event.preventDefault();
+    gestureBase = state.settings?.fontSize ?? 14;
+  });
+  elPanesWrap.addEventListener("gesturechange", (event) => {
+    event.preventDefault();
+    if (Number.isFinite(event.scale)) zoomEditor(gestureBase * event.scale);
+  });
+
   $("font-reset").onclick = () => {
     send({ cmd: "updateSettings", patch: { fontSize: 14 } });
   };
@@ -1952,7 +1865,7 @@
     else if (k === "s") { e.preventDefault(); send({ cmd: "save", saveAs: e.shiftKey }); }
     else if (k === "o") { e.preventDefault(); send({ cmd: "openFileDialog" }); }
     else if (k === "n") { e.preventDefault(); closeSettings(); send({ cmd: "newTab" }); }
-    else if (k === "f") { e.preventDefault(); openFind(false); }
+    else if (k === "f") { e.preventDefault(); if (e.shiftKey) openWorkspaceSearch(); else openFind(false); }
     else if (k === "h") { e.preventDefault(); openFind(true); }
     else if (k === "p") { e.preventDefault(); requestPrint(); }
     else if (k === "\\") { e.preventDefault(); send({ cmd: "updateSettings", patch: { viewMode: "split" } }); }
@@ -1981,6 +1894,7 @@
     if (!msg || !msg.event) return;
     switch (msg.event) {
       case "init":
+        state.pandocAvailable = Boolean(msg.pandocAvailable);
         state.platform = msg.platform || "windows";
         document.body.classList.toggle("native-chrome", state.platform !== "windows");
         if (state.platform === "macos") {
@@ -2010,7 +1924,7 @@
         if (msg.docId !== state.activeTabId || !state.doc || msg.patch.version <= state.doc.version) break;
         if (msg.userEdit) state.pendingEdits = Math.max(0, state.pendingEdits - 1);
         if (msg.source && (!msg.userEdit || !state.pendingEdits) && !state.sourceRequest) {
-          applySourceWindow(msg.source);
+          applySourceWindow(msg.source, true);
         }
         if (!msg.userEdit) {
           endSourceAction();
@@ -2034,6 +1948,15 @@
 
       case "liveWidgetsRendered":
         liveWidgetRequests.get(msg.request)?.(msg.html);
+        break;
+
+      case "externalChange":
+        if (msg.docId !== state.activeTabId) break;
+        externalDialog.dataset.docId = msg.docId;
+        $("external-change-name").textContent = msg.title;
+        $("external-change-description").textContent = t(msg.missing ? "externalMissingDescription" : "externalChangeDescription");
+        $("external-reload").disabled = msg.missing;
+        if (!externalDialog.open) externalDialog.showModal();
         break;
 
       case "blocksLoaded": {
@@ -2069,13 +1992,6 @@
         setSourceReadOnly(state.pendingSourceEdit);
         applySourceWindow(msg.source);
         if (target) applySourceSelection(target);
-        else if (state.live) {
-          state.live.select(0);
-        } else {
-          elSourceEditor.setSelectionRange(0, 0);
-          setSyncedScroll(elSourceEditor, 0);
-          updateCursorStatus(false);
-        }
         if (state.settings?.viewMode === "split" && state.settings.syncScroll) {
           showPreviewLine(target?.line ?? state.windowStartLine);
         }
@@ -2089,11 +2005,17 @@
         if (msg.fileTree !== undefined) state.fileTree = msg.fileTree;
         renderTabs();
         loadDocumentSnapshot(msg.doc);
+        if (workspaceHit) {
+          const hit = workspaceHit;
+          workspaceHit = null;
+          if (msg.doc?.path === hit.path) jumpToLine(hit.line, hit);
+        }
         if (msg.toast) showToast(msg.toast);
         break;
 
       case "tabsUpdated":
         applyTabSummaries(msg.tabs);
+        if (msg.fileTree !== undefined) { state.fileTree = msg.fileTree; renderFileTree(); }
         if (msg.toast) showToast(msg.toast);
         break;
 
@@ -2128,11 +2050,37 @@
         if (msg.wallpaper) applyWallpaperAndTheme(msg.wallpaper);
         break;
 
+      case "workspaceSearchResults": {
+        if (msg.request !== workspaceRequest || !workspaceSearch.open) break;
+        const hits = msg.matches || [];
+        $("workspace-search-status").textContent = msg.error ||
+          t(msg.truncated ? "workspaceMoreMatches" : "workspaceMatches", { n: hits.length });
+        const fragment = document.createDocumentFragment();
+        for (const hit of hits) {
+          const button = document.createElement("button");
+          button.className = "workspace-hit";
+          const location = document.createElement("strong");
+          location.textContent = `${hit.relative}:${hit.line + 1}`;
+          const excerpt = document.createElement("span");
+          excerpt.textContent = hit.excerpt;
+          button.append(location, excerpt);
+          button.onclick = () => {
+            workspaceHit = hit;
+            workspaceSearch.close();
+            send({ cmd: "openPath", path: hit.path });
+          };
+          fragment.appendChild(button);
+        }
+        workspaceResults.replaceChildren(fragment);
+        break;
+      }
+
       case "searchResults":
         if (state.findOpen && msg.docId === state.activeTabId && msg.request === state.searchRequest &&
             msg.version === state.doc?.version && !state.pendingEdits) {
           state.searchVersion = msg.version;
           state.findMatches = msg.matches;
+          state.editor?.setMatches(msg.matches, state.windowStartLine);
           state.findIndex = state.findMatches.length ? 0 : -1;
           elFindCount.textContent = "0 / 0";
           if (state.findMatches.length) navigateMatch(0);
@@ -2148,13 +2096,38 @@
           const path = msg.path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/");
           const name = (msg.path.split(/[\\/]/).pop() || "image").replace(/[[\]\\]/g, "\\$&");
           const image = "\n![" + name + "](<" + path + ">)\n";
-          if (state.live) {
-            const { from, to } = state.live.selection;
-            state.live.replace(from, to, image);
-          } else {
-            replaceEditorSelection(image);
+          if (state.editor) {
+            const { from, to } = state.editor.selection;
+            state.editor.replace(from, to, image);
           }
         }
+        break;
+
+      case "clipboardImageSaved": {
+        const paste = imagePaste;
+        if (!paste || paste.request !== msg.request || paste.id !== msg.docId) break;
+        imagePaste = null;
+        applyTabSummaries(msg.tabs);
+        if (state.doc !== paste.doc) break;
+        endSourceAction();
+        if (msg.error) showToast(msg.error);
+        if (!msg.path) break;
+        const markdown = `![](${msg.path})`;
+        state.editor?.replace(paste.from, paste.to, markdown);
+        break;
+      }
+
+      case "nativeMenu":
+        if (msg.id === "quit") send({ cmd: "windowClose" });
+        else if (msg.id === "settings") openSettings();
+        else if (msg.id === "about") {
+          openSettings();
+          document.querySelector('[data-section="about"]')?.click();
+        } else if (msg.id === "undo") state.editor?.undo();
+        else if (msg.id === "redo") state.editor?.redo();
+        else if (msg.id === "workspace-search") openWorkspaceSearch();
+        else if (["btn-new", "btn-open", "menu-open-folder", "btn-save", "btn-save-as", "btn-print",
+          "menu-close-tab", "menu-find", "font-plus", "font-minus", "font-reset"].includes(msg.id)) $(msg.id).click();
         break;
 
       case "windowState": {

@@ -70,6 +70,7 @@ export class RenderedMarkdown extends WidgetType {
   get estimatedHeight() {
     if (!this.block) return -1;
     if (this.kind === "table") return this.tableRows * 34 + 20;
+    if (this.kind === "diagram") return 160;
     return this.kind === "image" ? 140 : 76;
   }
 
@@ -99,7 +100,7 @@ export class RenderedMarkdown extends WidgetType {
         else element.replaceChildren(fragment);
       }
       for (const checkbox of element.querySelectorAll(".mt-task-cb")) checkbox.tabIndex = -1;
-      this.renderer.hydrate(element);
+      void this.renderer.hydrate(element).then(refresh);
       refresh();
     });
     return element;

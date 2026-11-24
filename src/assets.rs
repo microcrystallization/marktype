@@ -17,9 +17,10 @@ const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
 const STYLES_CSS: &[u8] = include_bytes!("../ui/styles.css");
 const SYNTAX_CSS: &[u8] = include_bytes!("../ui/syntax.css");
 const I18N_JS: &[u8] = include_bytes!("../ui/i18n.js");
-const SOURCE_JS: &[u8] = include_bytes!("../ui/source.js");
 const APP_JS: &[u8] = include_bytes!("../ui/app.js");
 const CODEMIRROR_JS: &[u8] = include_bytes!("../ui/vendor/codemirror.js");
+const MERMAID_JS: &[u8] = include_bytes!("../ui/vendor/mermaid.js");
+const DIAGRAMS_JS: &[u8] = include_bytes!("../ui/diagrams.js");
 
 const KATEX_JS: &[u8] = include_bytes!("../assets/katex/katex.min.js");
 const KATEX_CSS: &[u8] = include_bytes!("../assets/katex/katex.min.css");
@@ -39,6 +40,55 @@ struct LocalImages {
 
 static LOCAL_IMAGES: LazyLock<Mutex<LocalImages>> = LazyLock::new(Mutex::default);
 const MAX_LOCAL_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+
+pub(crate) fn save_clipboard_image(directory: &Path, encoded: &str) -> Result<String, String> {
+    use std::io::Write;
+
+    if encoded.len() as u64 > MAX_LOCAL_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("Clipboard image exceeds 32 MiB".into());
+    }
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|_| "Invalid clipboard image data")?;
+    if bytes.len() as u64 > MAX_LOCAL_IMAGE_BYTES {
+        return Err("Clipboard image exceeds 32 MiB".into());
+    }
+    let extension = match image::guess_format(&bytes) {
+        Ok(image::ImageFormat::Png) => ".png",
+        Ok(image::ImageFormat::Jpeg) => ".jpg",
+        Ok(image::ImageFormat::WebP) => ".webp",
+        Ok(image::ImageFormat::Gif) => ".gif",
+        Ok(image::ImageFormat::Bmp) => ".bmp",
+        _ => return Err("Unsupported clipboard image format".into()),
+    };
+    let path = directory.join("assets");
+    std::fs::create_dir_all(&path)
+        .map_err(|error| format!("Cannot create assets directory: {error}"))?;
+    let resolved = dunce::canonicalize(&path)
+        .map_err(|error| format!("Cannot locate assets directory: {error}"))?;
+    let directory = dunce::canonicalize(directory)
+        .map_err(|error| format!("Cannot locate document directory: {error}"))?;
+    if !resolved.starts_with(&directory) {
+        return Err("The assets directory points outside the document folder".into());
+    }
+    let write = || -> std::io::Result<String> {
+        let mut file = tempfile::Builder::new()
+            .prefix("clipboard-")
+            .suffix(extension)
+            .tempfile_in(resolved)?;
+        let name = file
+            .path()
+            .file_name()
+            .expect("clipboard file name")
+            .to_string_lossy()
+            .into_owned();
+        file.write_all(&bytes)?;
+        file.as_file().sync_all()?;
+        file.keep()?;
+        Ok(format!("assets/{name}"))
+    };
+    write().map_err(|error| format!("Cannot save clipboard image: {error}"))
+}
 
 pub fn register_picked_image(path: &Path) {
     if let Ok(canonical) = dunce::canonicalize(path)
@@ -228,15 +278,20 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             "application/javascript; charset=utf-8",
             CODEMIRROR_JS.to_vec(),
         ),
+        "/vendor/mermaid.js" => (
+            200,
+            "application/javascript; charset=utf-8",
+            MERMAID_JS.to_vec(),
+        ),
+        "/diagrams.js" => (
+            200,
+            "application/javascript; charset=utf-8",
+            DIAGRAMS_JS.to_vec(),
+        ),
         "/app.js" => (
             200,
             "application/javascript; charset=utf-8",
             APP_JS.to_vec(),
-        ),
-        "/source.js" => (
-            200,
-            "application/javascript; charset=utf-8",
-            SOURCE_JS.to_vec(),
         ),
         "/katex/katex.min.js" => (
             200,
@@ -331,6 +386,15 @@ fn mime_from_path(path: &Path) -> &'static str {
 }
 
 pub fn export_html_template(title: &str, body_html: &str, light: bool) -> String {
+    export_html(title, body_html, light, None)
+}
+
+pub(crate) fn export_html(
+    title: &str,
+    body_html: &str,
+    light: bool,
+    link_base: Option<&Path>,
+) -> String {
     static KATEX_INLINE_CSS: LazyLock<String> = LazyLock::new(|| {
         let css = std::str::from_utf8(KATEX_CSS).unwrap_or("");
         let fonts = Regex::new(r#"url\(fonts/([^)]*\.woff2)\) format\("woff2"\),url\(fonts/[^)]*\) format\("woff"\),url\(fonts/[^)]*\) format\("truetype"\)"#).unwrap();
@@ -347,11 +411,35 @@ pub fn export_html_template(title: &str, body_html: &str, light: bool) -> String
     static LOCAL_SRC: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"src="/local-image/(\d+)""#).unwrap());
     let body_html = LOCAL_SRC.replace_all(body_html, |cap: &Captures<'_>| {
-        if let Some((mime, bytes)) = cap[1].parse().ok().and_then(local_image) {
-            format!("src=\"data:{mime};base64,{}\"", STANDARD.encode(bytes))
-        } else {
-            "src=\"\"".into()
+        let id = cap[1].parse::<usize>().ok();
+        if let Some(base) = link_base {
+            const URI_PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+                .remove(b'/')
+                .remove(b':')
+                .remove(b'.')
+                .remove(b'-')
+                .remove(b'_')
+                .remove(b'~');
+            if let Some(path) = id.and_then(|id| LOCAL_IMAGES.lock().ok()?.paths.get(id).cloned()) {
+                let relative = pathdiff::diff_paths(&path, base);
+                let path = relative
+                    .as_ref()
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let encoded = percent_encoding::utf8_percent_encode(&path, URI_PATH);
+                return if relative.is_some() {
+                    format!("src=\"{encoded}\"")
+                } else if path.starts_with('/') {
+                    format!("src=\"file://{encoded}\"")
+                } else {
+                    format!("src=\"file:///{encoded}\"")
+                };
+            }
+        } else if let Some((mime, bytes)) = id.and_then(local_image) {
+            return format!("src=\"data:{mime};base64,{}\"", STANDARD.encode(bytes));
         }
+        "src=\"\"".to_owned()
     });
     let katex_css = &*KATEX_INLINE_CSS;
     let katex_js = std::str::from_utf8(KATEX_JS).unwrap_or("");
@@ -364,6 +452,18 @@ pub fn export_html_template(title: &str, body_html: &str, light: bool) -> String
     let border = if light { "#e2e5ea" } else { "#2c2c35" };
     let accent = if light { "#5b43e8" } else { "#8b7cf6" };
     let safe_title = crate::highlight::escape_html_string(title);
+    let diagram_scripts = if body_html.contains("class=\"mt-diagram\"") {
+        static CLOSE_SCRIPT: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new("(?i)</script").unwrap());
+        let library =
+            CLOSE_SCRIPT.replace_all(std::str::from_utf8(MERMAID_JS).unwrap_or(""), "<\\/script");
+        let diagrams = std::str::from_utf8(DIAGRAMS_JS).unwrap_or("");
+        format!(
+            "<script>{library}</script><script>{diagrams}</script><script>MTDiagrams.observe(document);</script>"
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -394,6 +494,9 @@ pub fn export_html_template(title: &str, body_html: &str, light: bool) -> String
   table {{ border-collapse: collapse; width: 100%; margin: 1.2em 0; }}
   th, td {{ border: 1px solid {border}; padding: 8px 12px; }}
   img {{ max-width: 100%; border-radius: 8px; }}
+  .mt-diagram {{ overflow: auto; margin: 1em 0; }}
+  .mt-diagram-rendered {{ padding: 12px; background: #fff; border-radius: 8px; }}
+  .mt-diagram-rendered svg {{ max-width: 100%; height: auto; display: block; margin: auto; }}
   .mt-math-block {{ margin: 1.2em 0; text-align: center; overflow-x: auto; }}
   .mt-callout {{ border-left: 4px solid {accent}; background: {code_bg}; border-radius: 8px; padding: 12px 16px; margin: 1.2em 0; }}
   .mt-callout-title {{ font-weight: 600; margin-bottom: 6px; }}
@@ -412,6 +515,7 @@ document.querySelectorAll('.mt-math-inline').forEach(el => {{
   try {{ katex.render(el.dataset.tex || '', el, {{ displayMode: false, throwOnError: false }}); }} catch {{}}
 }});
 </script>
+{diagram_scripts}
 </body>
 </html>"#
     )

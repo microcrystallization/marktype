@@ -26,6 +26,7 @@ Migrated from [Kite](https://github.com/Kfkcome/kite). All 7 built-in paintings 
 ## Live Editor
 
 - **CodeMirror 6** and **Lezer** power inline editing and Markdown parsing. The bundled editor includes the license texts for CodeMirror, Lezer, and their dependencies (`ui/vendor/codemirror.js`).
+- **Mermaid** renders diagrams offline. The distribution and its MIT notice are embedded in `ui/vendor/mermaid.js`.
 
 ## Windows Installer Translations
 

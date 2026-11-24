@@ -1,12 +1,15 @@
 {
   "name": "marktype-ui",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "scripts": {
     "build:live": "node scripts/bundle-codemirror.mjs",
-    "check:live": "node scripts/bundle-codemirror.mjs --check"
+    "check:live": "node scripts/bundle-codemirror.mjs --check",
+    "build:diagrams": "node scripts/bundle-mermaid.mjs",
+    "check:diagrams": "node scripts/bundle-mermaid.mjs --check"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "6.20.4",
     "@codemirror/commands": "6.11.1",
     "@codemirror/lang-cpp": "6.0.3",
     "@codemirror/lang-go": "6.0.1",
@@ -21,7 +24,8 @@
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
     "@lezer/highlight": "1.2.5",
-    "@lezer/markdown": "1.8.1"
+    "@lezer/markdown": "1.8.1",
+    "mermaid": "12.3.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

@@ -4,9 +4,13 @@
 )]
 
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
-use tao::dpi::LogicalSize;
+use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::{ResizeDirection, Window, WindowBuilder};
@@ -20,6 +24,83 @@ use marktype::markdown::is_external_link;
 enum UserEvent {
     IpcMessage(String),
     FileDropped(PathBuf),
+    WorkspaceResults(serde_json::Value),
+    #[cfg(target_os = "macos")]
+    NativeMenu(String),
+}
+
+#[cfg(target_os = "macos")]
+fn install_native_menu(proxy: tao::event_loop::EventLoopProxy<UserEvent>) -> muda::Menu {
+    use muda::accelerator::{Accelerator, Code, Modifiers};
+    use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+
+    let item = |id: &str, text: &str, key, shift: bool| {
+        let modifiers = if shift {
+            Modifiers::SUPER | Modifiers::SHIFT
+        } else {
+            Modifiers::SUPER
+        };
+        MenuItem::with_id(id, text, true, Some(Accelerator::new(Some(modifiers), key)))
+    };
+    let application = Submenu::with_items(
+        "MarkType",
+        true,
+        &[
+            &MenuItem::with_id("about", "About MarkType", true, None),
+            &item("settings", "Settings…", Code::Comma, false),
+            &PredefinedMenuItem::separator(),
+            &item("quit", "Quit MarkType", Code::KeyQ, false),
+        ],
+    )
+    .expect("Create application menu");
+    let file = Submenu::with_items(
+        "File",
+        true,
+        &[
+            &item("btn-new", "New", Code::KeyN, false),
+            &item("btn-open", "Open…", Code::KeyO, false),
+            &MenuItem::with_id("menu-open-folder", "Open Folder…", true, None),
+            &PredefinedMenuItem::separator(),
+            &item("btn-save", "Save", Code::KeyS, false),
+            &item("btn-save-as", "Save As…", Code::KeyS, true),
+            &item("btn-print", "Print…", Code::KeyP, false),
+            &item("menu-close-tab", "Close Tab", Code::KeyW, false),
+        ],
+    )
+    .expect("Create file menu");
+    let edit = Submenu::with_items(
+        "Edit",
+        true,
+        &[
+            &item("undo", "Undo", Code::KeyZ, false),
+            &item("redo", "Redo", Code::KeyZ, true),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::cut(None),
+            &PredefinedMenuItem::copy(None),
+            &PredefinedMenuItem::paste(None),
+            &PredefinedMenuItem::select_all(None),
+            &item("menu-find", "Find", Code::KeyF, false),
+            &item("workspace-search", "Search Workspace", Code::KeyF, true),
+        ],
+    )
+    .expect("Create edit menu");
+    let view = Submenu::with_items(
+        "View",
+        true,
+        &[
+            &item("font-plus", "Increase Font Size", Code::Equal, false),
+            &item("font-minus", "Decrease Font Size", Code::Minus, false),
+            &item("font-reset", "Reset Font Size", Code::Digit0, false),
+        ],
+    )
+    .expect("Create view menu");
+    let menu =
+        Menu::with_items(&[&application, &file, &edit, &view]).expect("Create native menu bar");
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let _ = proxy.send_event(UserEvent::NativeMenu(event.id.0));
+    }));
+    menu.init_for_nsapp();
+    menu
 }
 
 #[cfg(target_os = "windows")]
@@ -151,6 +232,27 @@ fn build_webview(builder: WebViewBuilder<'_>, window: &Window) -> wry::Result<wr
     builder.build(window)
 }
 
+fn remember_window(window: &Window, state: &mut AppState) {
+    if window.is_minimized() {
+        return;
+    }
+    let previous = state.settings.window_geometry;
+    let mut geometry = previous;
+    geometry.maximized = window.is_maximized();
+    if !geometry.maximized {
+        let size = window.inner_size().to_logical(window.scale_factor());
+        geometry.size = [size.width, size.height];
+        geometry.position = window
+            .outer_position()
+            .ok()
+            .map(|position| [position.x, position.y]);
+    }
+    if geometry != previous {
+        state.settings.window_geometry = geometry;
+        let _ = marktype::settings::save(&state.settings);
+    }
+}
+
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
@@ -170,15 +272,36 @@ fn main() {
     let event_loop = event_loop_builder.build();
     let proxy_ipc = event_loop.create_proxy();
     let proxy_drop = event_loop.create_proxy();
+    let proxy_search = event_loop.create_proxy();
+    let workspace_query = Arc::new(AtomicU64::new(0));
 
-    let window = with_app_icon(WindowBuilder::new())
+    let geometry = state.settings.window_geometry;
+    let mut window_builder = with_app_icon(WindowBuilder::new())
         .with_title("MarkType")
         .with_decorations(!cfg!(target_os = "windows"))
-        .with_inner_size(LogicalSize::new(1420.0, 900.0))
+        .with_inner_size(LogicalSize::new(geometry.size[0], geometry.size[1]))
         .with_min_inner_size(LogicalSize::new(820.0, 560.0))
+        .with_maximized(geometry.maximized);
+    if let Some([x, y]) = geometry.position
+        && event_loop.available_monitors().any(|monitor| {
+            let origin = monitor.position();
+            let size = monitor.size();
+            let dx = i64::from(x) - i64::from(origin.x);
+            let dy = i64::from(y) - i64::from(origin.y);
+            dx >= -32
+                && dx < i64::from(size.width) - 32
+                && dy >= -32
+                && dy < i64::from(size.height) - 32
+        })
+    {
+        window_builder = window_builder.with_position(PhysicalPosition::new(x, y));
+    }
+    let window = window_builder
         .build(&event_loop)
         .expect("Failed to create MarkType window");
 
+    #[cfg(target_os = "macos")]
+    let native_menu = install_native_menu(event_loop.create_proxy());
     configure_windows_frameless_chrome(&window, !state.settings.light);
 
     let builder = WebViewBuilder::new()
@@ -232,24 +355,50 @@ fn main() {
     };
     let webview = build_webview(builder, &window).expect("Initialize the platform WebView");
 
+    let mut geometry_at = None;
     event_loop.run(move |event, _, control_flow| {
+        #[cfg(target_os = "macos")]
+        let _keep_menu_alive = &native_menu;
         if smoke_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             eprintln!("WebView smoke test timed out");
             *control_flow = ControlFlow::ExitWithCode(1);
             return;
         }
         *control_flow = state
-            .next_autosave()
-            .or(smoke_deadline)
+            .next_maintenance()
+            .into_iter().chain(smoke_deadline).chain(geometry_at).min()
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
 
         match event {
+            #[cfg(target_os = "macos")]
+            Event::UserEvent(UserEvent::NativeMenu(id)) => {
+                dispatch_json(&webview, &serde_json::json!({ "event": "nativeMenu", "id": id }));
+            }
             Event::UserEvent(UserEvent::IpcMessage(body)) => {
                 // Fast-path native frameless window chrome commands
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
                     && let Some(cmd) = v.get("cmd").and_then(|c| c.as_str())
                 {
                     match cmd {
+                        "workspaceSearch" => {
+                            if let Ok(request) = serde_json::from_value::<marktype::workspace::SearchRequest>(v) {
+                                workspace_query.store(request.request, Ordering::Relaxed);
+                                if request.query.is_empty() { return; }
+                                if let Some(root) = state.folder_root.clone() {
+                                    let latest = Arc::clone(&workspace_query);
+                                    let proxy = proxy_search.clone();
+                                    std::thread::spawn(move || {
+                                        let id = request.request;
+                                        let response = marktype::workspace::search(&root, request, &latest);
+                                        if latest.load(Ordering::Relaxed) == id { let _ = proxy.send_event(UserEvent::WorkspaceResults(response)); }
+                                    });
+                                } else {
+                                    dispatch_json(&webview, &serde_json::json!({"event":"workspaceSearchResults","request":request.request,
+                                        "error":"Open a workspace folder first"}));
+                                }
+                            }
+                            return;
+                        }
                         "smokeResult" if smoke => {
                             if let Some(error) = v.get("error").and_then(|value| value.as_str()) {
                                 eprintln!("WebView smoke test failed: {error}");
@@ -288,6 +437,7 @@ fn main() {
                             return;
                         }
                         "windowClose" => {
+                            remember_window(&window, &mut state);
                             handle_response(&webview, control_flow, &state.request_window_close());
                             return;
                         }
@@ -317,6 +467,11 @@ fn main() {
                         "cmd": "openPath", "path": path
                     }).to_string());
                     handle_response(&webview, control_flow, &response);
+                }
+            }
+            Event::UserEvent(UserEvent::WorkspaceResults(response)) => {
+                if response["request"].as_u64() == Some(workspace_query.load(Ordering::Relaxed)) {
+                    dispatch_json(&webview, &response);
                 }
             }
             Event::UserEvent(UserEvent::FileDropped(path)) => {
@@ -352,9 +507,10 @@ fn main() {
                 }
             }
             Event::WindowEvent {
-                event: WindowEvent::Resized(_),
+                event: WindowEvent::Resized(_) | WindowEvent::Moved(_),
                 ..
             } => {
+                geometry_at = Some(Instant::now() + Duration::from_millis(650));
                 dispatch_json(
                     &webview,
                     &serde_json::json!({
@@ -367,15 +523,20 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                remember_window(&window, &mut state);
                 handle_response(&webview, control_flow, &state.request_window_close());
             }
             Event::MainEventsCleared => {
-                for response in state.run_autosaves(Instant::now()) {
+                if geometry_at.is_some_and(|at| at <= Instant::now()) {
+                    geometry_at = None;
+                    remember_window(&window, &mut state);
+                }
+                for response in state.run_maintenance(Instant::now()) {
                     dispatch_json(&webview, &response);
                 }
                 *control_flow = state
-                    .next_autosave()
-                    .or(smoke_deadline)
+                    .next_maintenance()
+                    .into_iter().chain(smoke_deadline).chain(geometry_at).min()
                     .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
                 let title = state.active_doc().map_or_else(
                     || "MarkType".to_owned(),

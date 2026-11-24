@@ -1,7 +1,7 @@
 //! Application state and typed IPC command handlers bridging WebView2 <-> Rust engine.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -9,11 +9,14 @@ use serde_json::{Value, json};
 
 use crate::assets;
 use crate::engine::{Document, EditPatch, RenderedBlock, SearchQuery};
+use crate::exports::{self, PandocFormat};
 use crate::settings::{self, Settings, ThemePreset, ViewMode};
+use crate::storage::{self, FileStamp, Fingerprint, Session, SessionTab};
 use crate::wallpaper::fx::Effect;
 use crate::wallpaper::gallery::{self, BUILTINS};
 use crate::wallpaper::store::{self, Prepared};
 use crate::wallpaper::theme_tint::{Palette, ResolvedTheme};
+use crate::workspace;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +74,46 @@ pub struct AppState {
     pub folder_root: Option<PathBuf>,
     autosaves: HashMap<String, Instant>,
     pending_close: Option<CloseRequest>,
+    disk: HashMap<String, TrackedFile>,
+    recovery_at: Option<Instant>,
+    scan_at: Instant,
+    initialized: bool,
+    session_path: Option<PathBuf>,
+    _session_lease: Option<std::fs::File>,
+}
+
+struct TrackedFile {
+    expected: Option<Fingerprint>,
+    stamp: Option<FileStamp>,
+    changed: Option<Option<Fingerprint>>,
+    prompted: bool,
+    manual_save: bool,
+}
+
+impl TrackedFile {
+    fn new(expected: Option<Fingerprint>, stamp: Option<FileStamp>) -> Self {
+        Self {
+            expected,
+            stamp,
+            changed: None,
+            prompted: false,
+            manual_save: false,
+        }
+    }
+
+    fn observe(&mut self, path: &Path, force: bool) -> std::io::Result<()> {
+        let stamp = FileStamp::read(path)?;
+        if force || self.stamp != stamp {
+            let found = storage::disk_fingerprint(path)?;
+            let change = (found != self.expected).then_some(found);
+            if change != self.changed {
+                self.prompted = false;
+            }
+            self.stamp = stamp;
+            self.changed = change;
+        }
+        Ok(())
+    }
 }
 
 enum CloseTarget {
@@ -91,6 +134,16 @@ enum CloseChoice {
     Cancel,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WorkspaceAction {
+    NewDocument,
+    NewFolder,
+    Rename,
+    Trash,
+    Reveal,
+}
+
 impl AppState {
     pub fn new(initial_file: Option<PathBuf>) -> Self {
         let settings = settings::load();
@@ -100,6 +153,9 @@ impl AppState {
             .map(PathBuf::from)
             .filter(|p| p.is_dir());
 
+        let (session_path, session_lease) = settings::config_dir()
+            .and_then(|dir| storage::claim_session(&dir).ok())
+            .unzip();
         let mut app = Self {
             settings,
             docs: Vec::new(),
@@ -110,10 +166,17 @@ impl AppState {
             folder_root,
             autosaves: HashMap::new(),
             pending_close: None,
+            disk: HashMap::new(),
+            recovery_at: None,
+            scan_at: Instant::now(),
+            initialized: false,
+            session_path,
+            _session_lease: session_lease,
         };
 
         // Prepare initial wallpaper synchronously on fast cache hit, or compute once
         app.sync_wallpaper_now();
+        app.restore_recovery();
 
         if let Some(path) = initial_file {
             let _ = app.open_file_path(&path);
@@ -158,23 +221,27 @@ impl AppState {
             .position(|d| d.path.as_deref() == Some(path.as_path()))
         {
             self.active_tab = Some(idx);
+            self.schedule_recovery();
             return Ok(idx);
         }
-        let t0 = Instant::now();
-        let text = std::fs::read_to_string(&path)
+        let (text, stamp) = storage::read_document(&path)
             .map_err(|e| format!("Cannot read UTF-8 document: {e}"))?;
         let title = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled.md".to_string());
         let id = self.alloc_doc_id();
+        self.disk.insert(
+            id.clone(),
+            TrackedFile::new(Some(storage::fingerprint(text.as_bytes())), Some(stamp)),
+        );
         let doc = Document::new(id, title, Some(path.clone()), &text);
-        let _open_ms = t0.elapsed().as_millis();
         self.docs.push(doc);
         let idx = self.docs.len() - 1;
         self.active_tab = Some(idx);
         self.settings.remember_recent_file(&path.to_string_lossy());
         let _ = settings::save(&self.settings);
+        self.schedule_recovery();
         Ok(idx)
     }
 
@@ -185,7 +252,230 @@ impl AppState {
         self.docs.push(doc);
         let idx = self.docs.len() - 1;
         self.active_tab = Some(idx);
+        self.schedule_recovery();
         idx
+    }
+
+    fn restore_recovery(&mut self) {
+        let Some(path) = self.session_path.clone() else {
+            return;
+        };
+        let read = |path: &Path| -> Option<Session> {
+            let file = std::fs::File::open(path).ok()?;
+            serde_json::from_reader(std::io::BufReader::new(file)).ok()
+        };
+        if let Some(session) = read(&path) {
+            self.restore_session(session);
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some("session.json") {
+            return;
+        }
+        let Some(directory) = path.parent() else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        let mut recovered = Vec::new();
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("json")
+                || !candidate
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("session-extra-"))
+            {
+                continue;
+            }
+            if let Ok(lease) = storage::lock_session(&candidate)
+                && let Some(session) = read(&candidate)
+            {
+                let active = self.active_tab;
+                self.restore_session(session);
+                self.active_tab = active.or(self.active_tab);
+                recovered.push((candidate, lease));
+            }
+        }
+        if !recovered.is_empty() && self.persist_session(true).is_ok() {
+            for (candidate, _lease) in recovered {
+                let _ = std::fs::remove_file(candidate);
+            }
+        }
+    }
+
+    fn restore_session(&mut self, session: Session) {
+        for (index, mut tab) in session.tabs.into_iter().enumerate() {
+            if tab.path.is_some() && self.docs.iter().any(|doc| doc.path == tab.path) {
+                if tab.draft.is_none() {
+                    continue;
+                }
+                tab.title = format!("Recovered — {}", tab.title);
+                tab.path = None;
+            }
+            let dirty = tab.draft.is_some();
+            let (text, tracked) = match (&tab.path, tab.draft) {
+                (Some(path), Some(draft)) => {
+                    let mut tracked = TrackedFile::new(tab.expected_disk, None);
+                    tracked.manual_save = tab.manual_save;
+                    let _ = tracked.observe(path, true);
+                    (draft, Some(tracked))
+                }
+                (Some(path), None) => {
+                    let Ok((text, stamp)) = storage::read_document(path) else {
+                        continue;
+                    };
+                    let tracked =
+                        TrackedFile::new(Some(storage::fingerprint(text.as_bytes())), Some(stamp));
+                    (text, Some(tracked))
+                }
+                (None, draft) => (draft.unwrap_or_default(), None),
+            };
+            let id = self.alloc_doc_id();
+            if let Some(tracked) = tracked {
+                self.disk.insert(id.clone(), tracked);
+            }
+            let mut doc = Document::new(id, tab.title, tab.path, &text);
+            doc.dirty = dirty;
+            if session.active == Some(index) {
+                self.active_tab = Some(self.docs.len());
+            }
+            self.docs.push(doc);
+        }
+        if self.active_tab.is_none() && !self.docs.is_empty() {
+            self.active_tab = Some(0);
+        }
+    }
+
+    fn schedule_recovery(&mut self) {
+        self.recovery_at
+            .get_or_insert_with(|| Instant::now() + Duration::from_millis(750));
+    }
+
+    fn session(&self, include_drafts: bool) -> Session {
+        Session {
+            active: self.active_tab,
+            tabs: self
+                .docs
+                .iter()
+                .map(|doc| {
+                    let tracked = self.disk.get(&doc.id);
+                    let draft = (doc.dirty && include_drafts).then(|| {
+                        let mut bytes = Vec::new();
+                        doc.write_text(&mut bytes)
+                            .expect("Write document to memory");
+                        String::from_utf8(bytes).expect("Document encodes as UTF-8")
+                    });
+                    SessionTab {
+                        path: doc.path.clone(),
+                        title: doc.title.clone(),
+                        draft,
+                        expected_disk: tracked.and_then(|file| file.expected),
+                        manual_save: tracked.is_some_and(|file| file.manual_save),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn persist_session(&self, include_drafts: bool) -> std::io::Result<()> {
+        if let Some(path) = &self.session_path {
+            storage::atomic_json(path, &self.session(include_drafts))?;
+        }
+        Ok(())
+    }
+
+    pub fn next_maintenance(&self) -> Option<Instant> {
+        [
+            self.next_autosave(),
+            self.recovery_at,
+            (self.initialized && !self.disk.is_empty()).then_some(self.scan_at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    pub fn run_maintenance(&mut self, now: Instant) -> Vec<Value> {
+        let mut events = self.run_autosaves(now);
+        if self.recovery_at.is_some_and(|at| at <= now) {
+            self.recovery_at = None;
+            if let Err(error) = self.persist_session(true) {
+                events.push(error_toast(format!(
+                    "Cannot save session recovery: {error}"
+                )));
+                self.recovery_at = Some(now + Duration::from_secs(5));
+            }
+        }
+        if self.initialized && now >= self.scan_at {
+            self.scan_at = now + Duration::from_secs(1);
+            if let Some(change) = self.poll_external_change() {
+                events.push(change);
+            }
+        }
+        events
+    }
+
+    fn poll_external_change(&mut self) -> Option<Value> {
+        if self.pending_close.is_some() {
+            return None;
+        }
+        let doc = self.docs.get(self.active_tab?)?;
+        let file = self.disk.get_mut(&doc.id)?;
+        file.observe(doc.path.as_deref()?, false).ok()?;
+        let change = file.changed?;
+        if file.prompted {
+            return None;
+        }
+        file.prompted = true;
+        Some(
+            json!({ "event": "externalChange", "docId": doc.id, "title": doc.title, "missing": change.is_none() }),
+        )
+    }
+
+    fn resolve_external_change(&mut self, doc_id: &str, reload: bool) -> Result<Value, String> {
+        let idx = self
+            .active_tab
+            .filter(|&idx| self.docs[idx].id == doc_id)
+            .ok_or_else(|| "The document is no longer active".to_owned())?;
+        let doc = &mut self.docs[idx];
+        let path = doc
+            .path
+            .clone()
+            .ok_or_else(|| "The document has no path".to_owned())?;
+        let file = self
+            .disk
+            .get_mut(doc_id)
+            .ok_or_else(|| "The document is no longer tracked".to_owned())?;
+        if reload {
+            let (text, stamp) = storage::read_document(&path)
+                .map_err(|error| format!("Cannot reload document: {error}"))?;
+            *file = TrackedFile::new(Some(storage::fingerprint(text.as_bytes())), Some(stamp));
+            let mut loaded = Document::new(doc.id.clone(), doc.title.clone(), Some(path), &text);
+            loaded.version = doc.version + 1;
+            *doc = loaded;
+        } else {
+            file.observe(&path, true)
+                .map_err(|error| format!("Cannot check disk version: {error}"))?;
+            if let Some(found) = file.changed.take() {
+                file.expected = found;
+                file.manual_save = true;
+                doc.dirty = true;
+            }
+            file.prompted = false;
+        }
+        self.autosaves.remove(doc_id);
+        self.schedule_recovery();
+        if reload {
+            let doc = self.active_doc_snapshot(200);
+            Ok(
+                json!({ "event": "tabSwitched", "tabs": self.tab_summaries(), "activeTabId": doc_id, "doc": doc }),
+            )
+        } else {
+            Ok(json!({ "event": "tabsUpdated", "tabs": self.tab_summaries() }))
+        }
     }
 
     pub fn sync_wallpaper_now(&mut self) {
@@ -367,6 +657,110 @@ impl AppState {
         Some(build_file_tree(root, 0))
     }
 
+    fn workspace_action(
+        &mut self,
+        action: WorkspaceAction,
+        path: Option<PathBuf>,
+        name: Option<String>,
+    ) -> Result<Value, String> {
+        let root = self
+            .folder_root
+            .as_deref()
+            .ok_or_else(|| "Open a workspace folder first".to_owned())?;
+        let root = dunce::canonicalize(root)
+            .map_err(|error| format!("Cannot locate workspace: {error}"))?;
+        let path = workspace::existing_inside(&root, path.as_deref().unwrap_or(&root))?;
+        match action {
+            WorkspaceAction::Reveal => {
+                workspace::reveal(&path)?;
+                return Ok(json!({ "event": "noop" }));
+            }
+            WorkspaceAction::NewDocument | WorkspaceAction::NewFolder => {
+                let folder = if path.is_dir() {
+                    path.as_path()
+                } else {
+                    path.parent().unwrap_or(&root)
+                };
+                let document = matches!(action, WorkspaceAction::NewDocument);
+                let target =
+                    workspace::child_path(folder, name.as_deref().unwrap_or_default(), document)?;
+                if document {
+                    workspace::create_document(&target)
+                        .map_err(|error| format!("Cannot create document: {error}"))?;
+                    self.open_file_path(&target)?;
+                    let doc = self.active_doc_snapshot(200);
+                    return Ok(
+                        json!({"event":"tabSwitched","doc":doc,"tabs":self.tab_summaries(),
+                        "activeTabId":self.active_doc().map(|doc|&doc.id),"fileTree":self.scan_folder_tree()}),
+                    );
+                }
+                std::fs::create_dir(target)
+                    .map_err(|error| format!("Cannot create folder: {error}"))?;
+            }
+            WorkspaceAction::Rename | WorkspaceAction::Trash => {
+                let parent = path
+                    .parent()
+                    .filter(|_| path != root)
+                    .ok_or_else(|| "The workspace root is open".to_owned())?;
+                if matches!(action, WorkspaceAction::Trash) {
+                    trash::delete(&path)
+                        .map_err(|error| format!("Cannot move item to Trash: {error}"))?;
+                    self.scan_at = Instant::now();
+                } else {
+                    let target = workspace::child_path(
+                        parent,
+                        name.as_deref().unwrap_or_default(),
+                        path.is_file(),
+                    )?;
+                    if target != path {
+                        if std::fs::symlink_metadata(&target).is_ok() {
+                            return Err("An item already has that name".into());
+                        }
+                        std::fs::rename(&path, &target)
+                            .map_err(|error| format!("Cannot rename workspace item: {error}"))?;
+                        for doc in &mut self.docs {
+                            if let Some(relative) = doc
+                                .path
+                                .as_deref()
+                                .and_then(|current| current.strip_prefix(&path).ok())
+                            {
+                                let moved = if relative.as_os_str().is_empty() {
+                                    target.clone()
+                                } else {
+                                    target.join(relative)
+                                };
+                                doc.title = moved
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned();
+                                doc.set_path(moved);
+                                if let Some(file) = self.disk.get_mut(&doc.id) {
+                                    file.stamp = None;
+                                }
+                            }
+                        }
+                        for recent in &mut self.settings.recent_files {
+                            if let Ok(relative) = Path::new(recent).strip_prefix(&path) {
+                                *recent = if relative.as_os_str().is_empty() {
+                                    target.clone()
+                                } else {
+                                    target.join(relative)
+                                }
+                                .to_string_lossy()
+                                .into_owned();
+                            }
+                        }
+                        let _ = settings::save(&self.settings);
+                    }
+                }
+            }
+        }
+        Ok(
+            json!({ "event": "tabsUpdated", "tabs": self.tab_summaries(), "fileTree": self.scan_folder_tree() }),
+        )
+    }
+
     pub fn handle_command(&mut self, raw: &str) -> Value {
         let Ok(cmd) = serde_json::from_str::<IpcCommand>(raw) else {
             return json!({ "event": "error", "message": "Invalid IPC payload" });
@@ -374,6 +768,12 @@ impl AppState {
 
         let before = self.active_doc().map(|doc| (doc.id.clone(), doc.version));
         let response = self.handle(cmd);
+        if matches!(
+            response["event"].as_str(),
+            Some("patch" | "tabSwitched" | "saved" | "tabsUpdated" | "clipboardImageSaved")
+        ) {
+            self.schedule_recovery();
+        }
         if let Some((id, version)) = before
             && let Some(doc) = self.active_doc()
             && doc.id == id
@@ -412,7 +812,8 @@ impl AppState {
             {
                 match self.save_document(idx, false, false) {
                     Ok(Some(changed_path)) => {
-                        responses.push(self.saved_response(idx, changed_path))
+                        responses.push(self.saved_response(idx, changed_path));
+                        self.schedule_recovery();
                     }
                     Ok(None) => {}
                     Err(e) => responses.push(error_toast(e)),
@@ -471,7 +872,10 @@ impl AppState {
             request.documents.pop_front();
         }
         match self.pending_close.take().unwrap().target {
-            CloseTarget::Window => json!({ "event": "exitRequested" }),
+            CloseTarget::Window => match self.persist_session(false) {
+                Ok(()) => json!({ "event": "exitRequested" }),
+                Err(error) => error_toast(format!("Cannot finalize session: {error}")),
+            },
             CloseTarget::Tab(id) => self.finish_close_tab(&id),
         }
     }
@@ -519,6 +923,7 @@ impl AppState {
         };
         let closing_active = self.active_tab == Some(idx);
         self.autosaves.remove(id);
+        self.disk.remove(id);
         self.docs.remove(idx);
         self.active_tab = match self.active_tab {
             _ if self.docs.is_empty() => None,
@@ -571,10 +976,46 @@ impl AppState {
         {
             return Err("Save failed: another tab already has this file open".into());
         }
-        atomic_write(&target, |file| doc.write_text(file))
-            .map_err(|e| format!("Save failed: {e}"))?;
+        let track = (doc.path.as_ref() == Some(&target))
+            .then(|| self.disk.get(&doc.id))
+            .flatten();
+        if track.is_some_and(|file| file.manual_save) && !allow_dialog {
+            return Ok(None);
+        }
+        let expected = track.map(|file| file.expected);
+        let mut hasher = blake3::Hasher::new();
+        doc.write_text(&mut hasher)
+            .map_err(|error| format!("Cannot encode document: {error}"))?;
+        let saved = Some(*hasher.finalize().as_bytes());
+        let mut conflict = false;
+        let write = storage::atomic_write_checked(
+            &target,
+            |file| doc.write_text(file),
+            || {
+                if let Some(expected) = expected
+                    && storage::disk_fingerprint(&target)? != expected
+                {
+                    conflict = true;
+                    return Err(std::io::Error::other("the file changed on disk"));
+                }
+                Ok(())
+            },
+        );
+        if let Err(error) = write {
+            if conflict {
+                if let Some(tracked) = self.disk.get_mut(&doc.id) {
+                    let _ = tracked.observe(&target, true);
+                }
+                self.scan_at = Instant::now();
+            }
+            return Err(format!("Save failed: {error}"));
+        }
         let path = dunce::canonicalize(&target).unwrap_or(target);
         let doc = &mut self.docs[idx];
+        self.disk.insert(
+            doc.id.clone(),
+            TrackedFile::new(saved, FileStamp::read(&path).ok().flatten()),
+        );
         let changed_path = doc.set_path(path.clone());
         if let Some(name) = path.file_name() {
             doc.title = name.to_string_lossy().into_owned();
@@ -605,6 +1046,7 @@ impl AppState {
     fn handle(&mut self, cmd: IpcCommand) -> Value {
         match cmd {
             IpcCommand::Init => {
+                self.initialized = true;
                 let doc = self.active_doc_snapshot(200);
                 let tabs = self.tab_summaries();
                 let wp = self.wallpaper_payload();
@@ -612,6 +1054,7 @@ impl AppState {
                 json!({
                     "event": "init",
                     "version": env!("CARGO_PKG_VERSION"),
+                    "pandocAvailable": exports::pandoc().is_some(),
                     "platform": std::env::consts::OS,
                     "settings": self.settings,
                     "tabs": tabs,
@@ -630,6 +1073,7 @@ impl AppState {
                 text,
                 source,
                 utf16,
+                defer_preview,
             } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
                     return json!({ "event": "noop" });
@@ -657,11 +1101,16 @@ impl AppState {
                 let (Some(start), Some(end)) = (offset(start_char), offset(end_char)) else {
                     return json!({ "event": "noop" });
                 };
-                let patch =
-                    doc.apply_edit_with_preview(start, end, &text, (!utf16).then_some(true));
+                let defer_preview = defer_preview.unwrap_or(utf16);
+                let patch = doc.apply_edit_with_preview(
+                    start,
+                    end,
+                    &text,
+                    (!defer_preview).then_some(true),
+                );
                 let mut response = patch_response(doc, patch, source);
                 response["userEdit"] = json!(true);
-                if utf16 {
+                if defer_preview {
                     response["deferredPreview"] = json!(true);
                 }
                 response
@@ -846,43 +1295,50 @@ impl AppState {
                 }
             }
 
-            IpcCommand::CreateFileInFolder { name } => {
-                let Some(root) = self.folder_root.clone() else {
-                    return json!({ "event": "toast", "message": "Open a folder first", "kind": "error" });
+            IpcCommand::WorkspaceAction { action, path, name } => self
+                .workspace_action(action, path, name)
+                .unwrap_or_else(error_toast),
+
+            IpcCommand::SaveClipboardImage {
+                doc_id,
+                request,
+                encoded,
+            } => {
+                let result = (|| {
+                    let idx = self
+                        .active_tab
+                        .filter(|&idx| self.docs[idx].id == doc_id)
+                        .ok_or_else(|| "The document is no longer active".to_owned())?;
+                    if self.docs[idx].path.is_none()
+                        && self.save_document(idx, false, true)?.is_none()
+                    {
+                        return Ok(None);
+                    }
+                    let folder = self.docs[idx]
+                        .path
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .ok_or_else(|| "The document has no folder".to_owned())?;
+                    assets::save_clipboard_image(folder, &encoded).map(Some)
+                })();
+                let (path, error) = match result {
+                    Ok(path) => (path, None),
+                    Err(error) => (None, Some(error)),
                 };
-                let clean = name.trim();
-                if !matches!(
-                    Path::new(clean).components().collect::<Vec<_>>().as_slice(),
-                    [Component::Normal(_)]
-                ) || clean.contains(['/', '\\', ':'])
-                {
-                    return json!({ "event": "toast", "message": "Invalid file name", "kind": "error" });
-                }
-                let final_name = if clean.ends_with(".md") || clean.ends_with(".markdown") {
-                    clean.to_string()
-                } else {
-                    format!("{clean}.md")
-                };
-                let target = root.join(final_name);
-                if !target.exists() {
-                    let heading = target
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "Untitled".to_string());
-                    if let Err(e) = std::fs::write(&target, format!("# {heading}\n\n")) {
-                        return json!({ "event": "toast", "message": format!("Create failed: {e}"), "kind": "error" });
+                json!({ "event": "clipboardImageSaved", "docId": doc_id, "request": request,
+                    "path": path, "error": error, "tabs": self.tab_summaries() })
+            }
+
+            IpcCommand::ResolveExternalChange { doc_id, reload } => {
+                match self.resolve_external_change(&doc_id, reload) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        if let Some(file) = self.disk.get_mut(&doc_id) {
+                            file.prompted = false;
+                        }
+                        error_toast(error)
                     }
                 }
-                let _ = self.open_file_path(&target);
-                let doc = self.active_doc_snapshot(200);
-                let tree = self.scan_folder_tree();
-                json!({
-                    "event": "tabSwitched",
-                    "tabs": self.tab_summaries(),
-                    "activeTabId": self.active_doc().map(|d| d.id.clone()),
-                    "doc": doc,
-                    "fileTree": tree,
-                })
             }
 
             IpcCommand::Save { save_as } => {
@@ -903,7 +1359,7 @@ impl AppState {
                 json!({ "event": "printDocument", "docId": doc.id, "html": doc.render_full_html() })
             }
 
-            IpcCommand::ExportHtml => {
+            IpcCommand::ExportHtml { inline_images } => {
                 let Some(doc) = self.active_doc_mut() else {
                     return json!({ "event": "noop" });
                 };
@@ -917,8 +1373,17 @@ impl AppState {
                 };
                 let title = doc.title.clone();
                 let body = doc.render_full_html();
-                let html = assets::export_html_template(&title, &body, self.settings.light);
-                match std::fs::write(&dest, html) {
+                let base = dest
+                    .parent()
+                    .and_then(|path| dunce::canonicalize(path).ok());
+                let link_base = (!inline_images.unwrap_or(true))
+                    .then_some(base.as_deref())
+                    .flatten();
+                let html = assets::export_html(&title, &body, self.settings.light, link_base);
+                match storage::atomic_write(&dest, |file| {
+                    use std::io::Write;
+                    file.write_all(html.as_bytes())
+                }) {
                     Ok(()) => json!({
                         "event": "toast",
                         "message": format!("Exported HTML to {}", dest.file_name().unwrap_or_default().to_string_lossy()),
@@ -926,6 +1391,32 @@ impl AppState {
                     Err(e) => {
                         json!({ "event": "toast", "message": format!("Export failed: {e}"), "kind": "error" })
                     }
+                }
+            }
+
+            IpcCommand::ExportPandoc { format } => {
+                let Some(doc) = self.active_doc() else {
+                    return json!({"event":"noop"});
+                };
+                let Some(binary) = exports::pandoc() else {
+                    return error_toast("Pandoc is not installed or is missing from PATH".into());
+                };
+                let extension = format.extension();
+                let name = Path::new(&doc.title).with_extension(extension);
+                let mut dialog = rfd::FileDialog::new()
+                    .set_file_name(name.to_string_lossy())
+                    .add_filter(extension, &[extension]);
+                if let Some(folder) = doc.path.as_deref().and_then(Path::parent) {
+                    dialog = dialog.set_directory(folder);
+                }
+                let Some(dest) = dialog.save_file() else {
+                    return json!({"event":"noop"});
+                };
+                match exports::convert_document(&binary, doc, &dest, format) {
+                    Ok(()) => {
+                        json!({"event":"toast","message":format!("Exported {}",dest.file_name().unwrap_or_default().to_string_lossy())})
+                    }
+                    Err(error) => error_toast(error),
                 }
             }
 
@@ -1171,25 +1662,6 @@ impl AppState {
     }
 }
 
-fn atomic_write(
-    path: &Path,
-    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    write(temp.as_file_mut())?;
-    #[cfg(unix)]
-    if let Ok(metadata) = std::fs::metadata(path) {
-        temp.as_file().set_permissions(metadata.permissions())?;
-    }
-    temp.as_file().sync_all()?;
-    temp.persist(path)?;
-    Ok(())
-}
-
 fn error_toast(message: String) -> Value {
     json!({ "event": "toast", "message": message, "kind": "error" })
 }
@@ -1251,24 +1723,18 @@ fn build_file_tree(dir: &Path, depth: usize) -> FileNode {
             if fname.starts_with('.') || fname == "target" || fname == "node_modules" {
                 continue;
             }
-            if p.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
                 dirs.push(build_file_tree(&p, depth + 1));
-            } else if p.is_file() {
-                let ext = p
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(str::to_ascii_lowercase);
-                if matches!(
-                    ext.as_deref(),
-                    Some("md" | "markdown" | "mdown" | "mkd" | "txt" | "tex")
-                ) {
-                    files.push(FileNode {
-                        name: fname,
-                        path: p.to_string_lossy().into_owned(),
-                        is_dir: false,
-                        children: Vec::new(),
-                    });
-                }
+            } else if kind.is_file() && workspace::document_file(&p) {
+                files.push(FileNode {
+                    name: fname,
+                    path: p.to_string_lossy().into_owned(),
+                    is_dir: false,
+                    children: Vec::new(),
+                });
             }
         }
         dirs.sort_by_key(|a| a.name.to_lowercase());
@@ -1298,6 +1764,7 @@ enum IpcCommand {
         source: Option<SourceRequest>,
         #[serde(default)]
         utf16: bool,
+        defer_preview: Option<bool>,
     },
     ToggleTask {
         doc_id: String,
@@ -1341,14 +1808,30 @@ enum IpcCommand {
         path: String,
     },
     OpenFolderDialog,
-    CreateFileInFolder {
-        name: String,
+    WorkspaceAction {
+        action: WorkspaceAction,
+        path: Option<PathBuf>,
+        name: Option<String>,
     },
     Save {
         #[serde(rename = "saveAs")]
         save_as: bool,
     },
-    ExportHtml,
+    ResolveExternalChange {
+        doc_id: String,
+        reload: bool,
+    },
+    SaveClipboardImage {
+        doc_id: String,
+        request: u64,
+        encoded: String,
+    },
+    ExportHtml {
+        inline_images: Option<bool>,
+    },
+    ExportPandoc {
+        format: PandocFormat,
+    },
     Print {
         doc_id: String,
     },
@@ -1431,6 +1914,17 @@ mod tests {
     use super::*;
 
     fn test_state(docs: Vec<Document>) -> AppState {
+        let disk = docs
+            .iter()
+            .filter_map(|doc| {
+                let path = doc.path.as_deref()?;
+                let expected = storage::disk_fingerprint(path).ok()?;
+                Some((
+                    doc.id.clone(),
+                    TrackedFile::new(expected, FileStamp::read(path).ok().flatten()),
+                ))
+            })
+            .collect();
         AppState {
             settings: Settings {
                 auto_save: true,
@@ -1444,6 +1938,12 @@ mod tests {
             folder_root: None,
             autosaves: HashMap::new(),
             pending_close: None,
+            disk,
+            recovery_at: None,
+            scan_at: Instant::now(),
+            initialized: true,
+            session_path: None,
+            _session_lease: None,
         }
     }
 
@@ -1455,6 +1955,85 @@ mod tests {
             Some(dunce::canonicalize(path).unwrap()),
             "original",
         )
+    }
+
+    #[test]
+    fn a_changed_file_is_protected_until_explicit_manual_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("first.md");
+        let mut state = test_state(vec![saved_document(&path)]);
+        state.docs[0].apply_edit(0, 8, "my draft", false);
+        std::fs::write(&path, "new disk").unwrap();
+
+        assert!(
+            state
+                .save_document(0, false, false)
+                .unwrap_err()
+                .contains("changed on disk")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new disk");
+        assert_eq!(state.poll_external_change().unwrap()["docId"], "first");
+        state.resolve_external_change("first", false).unwrap();
+        assert!(state.save_document(0, false, false).unwrap().is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new disk");
+        assert_eq!(state.save_document(0, false, true).unwrap(), Some(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "my draft");
+    }
+
+    #[test]
+    fn recovering_open_tabs_keeps_drafts_and_detects_a_changed_disk_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("first.md");
+        let mut state = test_state(vec![saved_document(&path)]);
+        state.session_path = Some(dir.path().join("session.json"));
+        state.docs[0].apply_edit(0, 8, "working copy", false);
+        state.new_untitled_doc();
+        state
+            .active_doc_mut()
+            .unwrap()
+            .apply_edit(0, 0, "unsaved note", false);
+        state.persist_session(true).unwrap();
+        std::fs::write(&path, "external edit").unwrap();
+
+        let manifest = std::fs::read(state.session_path.as_ref().unwrap()).unwrap();
+        let mut recovered = test_state(Vec::new());
+        recovered.active_tab = None;
+        recovered.restore_session(serde_json::from_slice(&manifest).unwrap());
+        assert_eq!(recovered.active_doc().unwrap().full_text(), "unsaved note");
+        recovered.active_tab = Some(0);
+        assert_eq!(recovered.active_doc().unwrap().full_text(), "working copy");
+        let doc_id = recovered.active_doc().unwrap().id.clone();
+        assert_eq!(recovered.poll_external_change().unwrap()["docId"], doc_id);
+        assert_eq!(
+            recovered.resolve_external_change(&doc_id, true).unwrap()["event"],
+            "tabSwitched"
+        );
+        assert_eq!(recovered.active_doc().unwrap().full_text(), "external edit");
+        assert!(!recovered.active_doc().unwrap().dirty);
+    }
+
+    #[test]
+    fn clipboard_images_get_distinct_relative_paths_and_invalid_data_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("first.md");
+        let mut state = test_state(vec![saved_document(&path)]);
+        let encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBCsAAAAASUVORK5CYII=";
+        let save = json!({ "cmd": "saveClipboardImage", "docId": "first", "request": 1, "encoded": encoded });
+        let first = state.handle_command(&save.to_string());
+        let second = state.handle_command(&save.to_string());
+        let first_path = first["path"].as_str().unwrap();
+        assert!(first_path.starts_with("assets/clipboard-") && first_path.ends_with(".png"));
+        assert_ne!(first["path"], second["path"]);
+        assert!(dir.path().join(first_path).is_file());
+        let mut invalid = save;
+        invalid["encoded"] = json!("bm90IGFuIGltYWdl");
+        assert!(state.handle_command(&invalid.to_string())["error"].is_string());
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("assets"))
+                .unwrap()
+                .count(),
+            2
+        );
     }
 
     #[test]

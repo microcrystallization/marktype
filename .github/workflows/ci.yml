@@ -79,11 +79,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Check offline CodeMirror bundle
+      - name: Check offline editor and diagram bundles
         if: runner.os == 'Linux'
         run: |
           npm ci
           npm run check:live
+          npm run check:diagrams
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

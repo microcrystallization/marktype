@@ -639,6 +639,10 @@ pub(crate) fn render_block_with_references(
                             "<div class=\"mt-math-block\" data-tex=\"{}\"></div>",
                             escape_html_string(code_buf.trim())
                         ));
+                    } else if lang_lower == "mermaid" {
+                        html.push_str("<div class=\"mt-diagram\"><pre>");
+                        escape_html(&code_buf, &mut html);
+                        html.push_str("</pre></div>");
                     } else {
                         let label = if code_lang.trim().is_empty() {
                             "text"

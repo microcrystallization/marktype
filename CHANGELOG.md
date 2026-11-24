@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2] - 2026-11-24
+
+- Paste clipboard images into Markdown. MarkType saves them beside the document in `assets/` and inserts a relative link.
+- Detect external file changes, protect the on-disk version during save, and restore open tabs, unsaved drafts and window geometry.
+- Use one CodeMirror editor across Split, Live and Source. Undo history now follows view changes. The editor supports multiple selections, folding and find highlights.
+- Create, rename, trash and reveal workspace items from the file tree. Search the workspace with Ctrl+Shift+F or Command+Shift+F.
+- Render Mermaid diagrams offline and export HTML with embedded or linked local images. Export Word or LaTeX when Pandoc is installed.
+- Added a native macOS menu, trackpad font zoom and a notarization option for builds with an Apple signing identity.
+
 ## [0.1.1] - 2026-11-24
 
 - Render images, GFM tables, link labels, and GitHub alerts directly in Live Preview. Click a widget to reveal its Markdown. Use Ctrl-click or Command-click to follow an external link.

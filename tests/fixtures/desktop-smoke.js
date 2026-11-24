@@ -1,5 +1,14 @@
 // Runs only with --smoke-test, against the real native WebView and IPC.
 (() => {
+  let editor;
+  Object.defineProperty(window, "MTEditor", {
+    configurable: true,
+    set(module) {
+      Object.defineProperty(window, "MTEditor", { configurable: true, value: {
+        create(...args) { editor = module.create(...args); return editor; },
+      } });
+    },
+  });
   async function waitFor(label, condition) {
     const deadline = Date.now() + 12000;
     while (!condition()) {
@@ -12,10 +21,9 @@
     let error;
     try {
       const preview = document.getElementById("preview-doc");
-      const editor = document.getElementById("source-editor");
       await waitFor("initial document did not arrive over IPC", () =>
         document.getElementById("about-version").textContent !== "" &&
-        editor.value.includes("MarkType") &&
+        editor?.text.includes("MarkType") &&
         preview.querySelector("h1"));
       await waitFor("KaTeX did not hydrate the document", () => preview.querySelector(".katex"));
       await waitFor("the custom protocol did not serve the titlebar icon", () =>
@@ -26,15 +34,15 @@
         throw new Error("the application stylesheet did not load");
       }
 
-      editor.value = "\u{1f9ea} Smoke\n\n" + editor.value + "\n\n**Desktop smoke edit**\n";
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editor.replace(0, editor.text.length, "\u{1f9ea} Smoke\n\n" + editor.text + "\n\n**Desktop smoke edit**\n");
       await waitFor("the edited Markdown was not rendered", () =>
         Array.from(preview.querySelectorAll("strong")).some((node) =>
           node.textContent === "Desktop smoke edit"));
 
-      editor.setSelectionRange(3, 3);
+      editor.select(0, 2);
+      const shared = editor;
       document.querySelector('.mode-btn[data-mode="live"]').click();
-      const live = document.getElementById("live-editor-host");
+      const live = document.getElementById("editor-host");
       await waitFor("CodeMirror did not mount with rendered math", () => live.querySelector(".katex"));
       document.querySelector('[data-fmt="bold"]').click();
       await waitFor("the live edit did not reach CodeMirror", () =>
@@ -42,7 +50,17 @@
       document.querySelector('.mode-btn[data-mode="split"]').click();
       await waitFor("split did not render the live edit", () =>
         preview.querySelector("strong")?.textContent === "bold text" &&
-        editor.value.startsWith("\u{1f9ea} **bold text**Smoke"));
+        editor.text.startsWith("\u{1f9ea} **bold text**Smoke"));
+      document.querySelector('.mode-btn[data-mode="source"]').click();
+      await waitFor("the editor was recreated across modes", () =>
+        editor === shared && document.querySelector(".panes-wrap.mode-source"));
+      const mac = /Mac/.test(navigator.platform);
+      live.querySelector(".cm-content").dispatchEvent(new KeyboardEvent("keydown", {
+        key: "z", ctrlKey: !mac, metaKey: mac, bubbles: true, cancelable: true,
+      }));
+      await waitFor("the Source view could not undo a Live edit", () => !editor.text.includes("**bold text**"));
+      document.querySelector('.mode-btn[data-mode="split"]').click();
+      await waitFor("Split view did not load after undo", () => document.querySelector(".panes-wrap.mode-split"));
 
       const languages = [
         ["python", "def square(value): return value ** 2", "def"],
@@ -59,18 +77,20 @@
         "![Smoke image](data:image/svg+xml;base64," + svg + ")", "",
         "| Name | Score |", "| --- | ---: |", "| Alpha | 2 |", "",
         "> [!NOTE]", "> Rendered note with **bold content**.", "",
+        "~~~mermaid", "flowchart LR", " A[Source] --> B[Preview]", "~~~", "",
         ...languages.flatMap(([name, code]) => ["~~~" + name, code, "~~~", ""]),
       ].join("\n");
-      editor.value = sample;
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editor.replace(0, editor.text.length, sample);
       await waitFor("sample document was not updated", () => preview.querySelector("table td")?.textContent === "Alpha");
-      editor.setSelectionRange(0, 0);
+      await waitFor("Mermaid did not render in Split", () => preview.querySelector(".mt-diagram svg"));
+      editor.select(0, 0);
       document.querySelector('.mode-btn[data-mode="live"]').click();
       await waitFor("Live rich widgets did not render", () =>
         live.querySelector(".cm-live-widget-table td")?.textContent === "Alpha" &&
         live.querySelector(".cm-live-widget-callout .mt-callout-note strong")?.textContent === "bold content" &&
         live.querySelector(".cm-live-widget-image img")?.naturalWidth === 8 &&
         live.querySelector(".cm-live-widget-link a")?.textContent === "example link" &&
+        live.querySelector(".cm-live-widget-diagram svg") &&
         !live.textContent.includes("https://example.com/live-widget-url"));
       await waitFor("a Live code language did not highlight", () => languages.every(([, code, token]) =>
         Array.from(live.querySelectorAll(".cm-line")).some((line) => line.textContent === code &&

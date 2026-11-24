@@ -69,6 +69,8 @@
           <button id="btn-save"><span data-i18n="menuSave">Save</span><kbd>Ctrl+S</kbd></button>
           <button id="btn-save-as"><span data-i18n="menuSaveAs">Save As…</span><kbd>Ctrl+Shift+S</kbd></button>
           <button id="btn-export" data-i18n="exportHtml">Export HTML</button>
+          <button id="btn-export-docx" data-i18n="exportDocx">Export Word (.docx)</button>
+          <button id="btn-export-tex" data-i18n="exportTex">Export LaTeX (.tex)</button>
           <hr />
           <button id="menu-close-tab" data-i18n="menuCloseTab">Close Tab</button>
           <button id="menu-exit" data-i18n="menuExit">Exit</button>
@@ -230,27 +232,14 @@
 
           <!-- Split / Live / Source Panes -->
           <div id="panes-wrap" class="panes-wrap mode-split">
-            <!-- Left Source Pane -->
+            <!-- CodeMirror editor shared by all three views -->
             <div id="source-pane" class="source-pane">
-              <div class="source-scroll-host" id="source-scroll-host">
-                <div id="source-highlight" class="source-highlight" aria-hidden="true"></div>
-                <textarea
-                  id="source-editor"
-                  class="source-editor"
-                  spellcheck="false"
-                  autocomplete="off"
-                  autocorrect="off"
-                  autocapitalize="off"
-                  data-i18n-placeholder="editorPlaceholder"
-                ></textarea>
-              </div>
+              <div id="editor-host" class="editor-host"></div>
             </div>
 
             <!-- Draggable Split Divider -->
             <div id="split-divider" class="split-divider"></div>
 
-            <!-- Right Live Rendered Preview / Typora Live Mode Pane -->
-            <div id="live-editor-host" class="live-editor-host"></div>
             <div id="preview-pane" class="preview-pane">
               <article id="preview-doc" class="preview-doc"></article>
               <div id="load-more-wrap" class="load-more-wrap hidden">
@@ -533,10 +522,60 @@
     </div>
   </dialog>
 
+  <dialog id="html-export-dialog" class="close-dialog" aria-labelledby="html-export-title">
+    <form id="html-export-form" method="dialog">
+      <h2 id="html-export-title" data-i18n="exportHtml">Export HTML</h2>
+      <label><input type="checkbox" id="html-inline-images" checked /> <span data-i18n="exportInlineImages">Embed local images</span></label>
+      <div class="close-dialog-actions">
+        <button type="button" id="html-export-cancel" data-i18n="closeCancel">Cancel</button>
+        <button type="submit" class="close-dialog-save" data-i18n="menuSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="external-change-dialog" class="close-dialog" aria-labelledby="external-change-title" aria-describedby="external-change-description">
+    <h2 id="external-change-title" data-i18n="externalChangeTitle">File changed on disk</h2>
+    <p><strong id="external-change-name"></strong> <span id="external-change-description"></span></p>
+    <div class="close-dialog-actions">
+      <button type="button" id="external-keep" data-i18n="externalKeep" autofocus>Keep Editor Version</button>
+      <button type="button" id="external-reload" class="close-dialog-save" data-i18n="externalReload">Reload from Disk</button>
+    </div>
+  </dialog>
+
+  <menu id="workspace-menu" class="workspace-menu hidden" aria-label="Workspace item actions">
+    <li><button data-workspace-action="newDocument" data-i18n="workspaceNewDocument">New Markdown file</button></li>
+    <li><button data-workspace-action="newFolder" data-i18n="workspaceNewFolder">New folder</button></li>
+    <li><button data-workspace-action="rename" data-i18n="workspaceRename">Rename</button></li>
+    <li><button data-workspace-action="trash" data-i18n="workspaceTrash">Move to Trash</button></li>
+    <li><button data-workspace-action="reveal" data-i18n="workspaceReveal">Show in file manager</button></li>
+  </menu>
+  <dialog id="workspace-item-dialog" class="close-dialog" aria-labelledby="workspace-item-title">
+    <form method="dialog" id="workspace-item-form">
+      <h2 id="workspace-item-title"></h2>
+      <p id="workspace-item-description"></p>
+      <input id="workspace-item-name" class="file-filter" aria-labelledby="workspace-item-title" />
+      <div class="close-dialog-actions">
+        <button type="button" id="workspace-item-cancel" data-i18n="closeCancel">Cancel</button>
+        <button type="submit" class="close-dialog-save" id="workspace-item-confirm"></button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="workspace-search-dialog" class="close-dialog workspace-search-dialog" aria-labelledby="workspace-search-title">
+    <h2 id="workspace-search-title" data-i18n="workspaceSearch">Search workspace</h2>
+    <input id="workspace-query" class="file-filter" type="search" data-i18n-placeholder="workspaceSearch" aria-labelledby="workspace-search-title" autocomplete="off" />
+    <div class="workspace-search-tools">
+      <label><input type="checkbox" id="workspace-case" /> <span data-i18n="workspaceCase">Match case</span></label>
+      <label><input type="checkbox" id="workspace-regex" /> <span data-i18n="workspaceRegex">Regular expression</span></label>
+      <button type="button" class="mini-btn" id="workspace-search-close" data-i18n="closeCancel">Close</button>
+    </div>
+    <p id="workspace-search-status" aria-live="polite"></p>
+    <div id="workspace-search-results" class="workspace-search-results"></div>
+  </dialog>
+
   <script src="/katex/katex.min.js"></script>
   <script src="/katex/mhchem.min.js"></script>
   <script src="/i18n.js"></script>
-  <script src="/source.js"></script>
+  <script src="/diagrams.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
