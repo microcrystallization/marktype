@@ -21,7 +21,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -46,3 +46,62 @@ jobs:
         run: cargo test --locked --all-targets --release -- --nocapture
       - name: Build release binary
         run: cargo build --locked --release
+      - name: Smoke test WebView2 desktop
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $env:MARKTYPE_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'marktype-smoke'
+          $app = Start-Process target/release/marktype.exe -ArgumentList '--smoke-test','examples/getting-started.md' -Wait -PassThru
+          if ($app.ExitCode -ne 0) { exit $app.ExitCode }
+
+  unix:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x64, runner: ubuntu-24.04, cache: linux-x64-release }
+          - { name: macOS Apple Silicon, runner: macos-15, cache: macos-arm64-release }
+          - { name: macOS Intel, runner: macos-15-intel, cache: macos-x64-release }
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.3"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install GTK and WebKitGTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth desktop-file-utils
+          desktop-file-validate packaging/linux/com.marktype.MarkType.desktop
+      - uses: actions/setup-node@v6
+        if: runner.os == 'Linux'
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check offline CodeMirror bundle
+        if: runner.os == 'Linux'
+        run: |
+          npm ci
+          npm run check:live
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.cache }}
+          cache-bin: "false"
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --locked --all-targets --release -- -D warnings
+      - run: cargo test --locked --all-targets --release
+      - run: cargo build --locked --release
+      - name: Smoke test native desktop
+        timeout-minutes: 2
+        run: |
+          export MARKTYPE_CONFIG_DIR="$RUNNER_TEMP/marktype-smoke"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+            xvfb-run -a target/release/marktype --smoke-test examples/getting-started.md
+          else
+            target/release/marktype --smoke-test examples/getting-started.md
+          fi

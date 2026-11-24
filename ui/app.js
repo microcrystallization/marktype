@@ -15,6 +15,10 @@
     return I18N.dict[code] ? code : "en";
   }
 
+  function platformShortcut(text) {
+    return state.platform === "macos" ? text.replace(/\bCtrl\s*\+\s*/g, "⌘") : text;
+  }
+
   function t(key, vars) {
     const lang = currentLang();
     let str = (I18N.dict[lang] && I18N.dict[lang][key]) || (I18N.dict.en && I18N.dict.en[key]) || key;
@@ -33,7 +37,7 @@
       el.textContent = t(el.dataset.i18n);
     });
     document.querySelectorAll("[data-i18n-title]").forEach((el) => {
-      el.title = t(el.dataset.i18nTitle);
+      el.title = platformShortcut(t(el.dataset.i18nTitle));
     });
     document.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
       el.placeholder = t(el.dataset.i18nPlaceholder);
@@ -46,14 +50,12 @@
     renderTabs();
     if (state.doc) {
       updateStatsUI(state.doc.stats);
-      updateCursorStatus();
+      if (!state.live) updateCursorStatus();
       updateLoadMoreVisibility();
       updateLargeBar();
     } else {
       $("st-cursor").textContent = "—";
-      $("st-words").textContent = t("stWords", { n: 0 });
-      $("st-chars").textContent = t("stChars", { n: 0 });
-      $("st-read").textContent = t("stRead", { n: 0 });
+      updateStatsUI({ words: 0, chars: 0, largeMode: false });
     }
     if (state.settings) {
       renderHeroRecent(state.settings.recentFiles || []);
@@ -70,6 +72,7 @@
   // ===== Application State =====
   const state = {
     settings: null,
+    platform: "windows",
     tabs: [],
     activeTabId: null,
     doc: null, // active doc metadata
@@ -168,10 +171,10 @@
   const elSettingsView = $("settings-view");
   const elPanesWrap = $("panes-wrap");
   const elSourcePane = $("source-pane");
-  const elLineGutter = $("line-gutter");
   const elSourceHighlight = $("source-highlight");
   const sourceHighlight = new window.MTSourceHighlight(elSourceHighlight);
   const elSourceEditor = $("source-editor");
+  const elLiveHost = $("live-editor-host");
   const elSplitDivider = $("split-divider");
   const elPreviewPane = $("preview-pane");
   const elPreviewDoc = $("preview-doc");
@@ -264,16 +267,9 @@
   }
 
   // Reuse line elements so typing updates the changed tokens rather than the whole overlay.
-  let gutterStart = -1;
-  let gutterLength = 0;
   function updateSourceOverlayAndGutter() {
     sourceHighlight.update(elSourceEditor.value, state.sourceContext, state.windowStartLine === 0);
-    const length = sourceHighlight.records.length;
-    if (gutterStart !== state.windowStartLine || gutterLength !== length) {
-      gutterStart = state.windowStartLine;
-      gutterLength = length;
-      elLineGutter.textContent = Array.from({ length }, (_, i) => gutterStart + i + 1).join("\n");
-    }
+    elSourceHighlight.style.setProperty("--source-first-line", state.windowStartLine);
     mirrorSourceScroll();
   }
 
@@ -305,23 +301,21 @@
   function ensureEmptyPreview() {
     if (elPreviewDoc.children.length) return;
     const placeholder = document.createElement("div");
-    placeholder.className = "mt-live-empty";
+    placeholder.className = "mt-preview-empty";
     const label = document.createElement("p");
-    label.className = "mt-live-empty-label";
+    label.className = "mt-preview-empty-label";
     label.textContent = t("liveEmptyPlaceholder");
     placeholder.append(label);
     elPreviewDoc.append(placeholder);
   }
 
   function replacePreviewBlocks(blocks, start = 0) {
-    const focused = detachLiveAnchor();
     const fragment = document.createDocumentFragment();
     for (const block of blocks) fragment.append(createBlockElement(block));
     elPreviewDoc.replaceChildren(fragment);
     state.loadedBlocks = blocks.length;
     state.previewStart = start;
     ensureEmptyPreview();
-    mountLiveAnchor(focused);
     updateLoadMoreVisibility();
   }
 
@@ -341,8 +335,7 @@
       replaceStart -= oldStart;
     }
     if (replaceStart > state.loadedBlocks) return;
-    const focused = state.live && document.activeElement === state.live.editor;
-    if (elPreviewDoc.firstElementChild?.classList.contains("mt-live-empty")) {
+    if (elPreviewDoc.firstElementChild?.classList.contains("mt-preview-empty")) {
       elPreviewDoc.firstElementChild.remove();
     }
     const children = elPreviewDoc.children;
@@ -372,7 +365,6 @@
     shiftPreviewLines(replaceStart + inserted.length, lineDelta);
     state.loadedBlocks = children.length;
     ensureEmptyPreview();
-    mountLiveAnchor(focused);
   }
 
   function shiftPreviewLines(start, delta) {
@@ -411,22 +403,21 @@
     }
   }
 
-  function applyIncrementalPatch(patch) {
+  function applyIncrementalPatch(patch, deferredPreview) {
     state.totalBlocks = patch.totalBlocks;
     state.totalLines = patch.totalLines;
     state.doc.version = patch.version;
     state.doc.stats = patch.stats;
-    patchPreviewBlocks(patch);
+    if (deferredPreview) state.previewNeedsRefresh = true;
+    if (!state.previewNeedsRefresh) patchPreviewBlocks(patch);
 
     if (patch.outlineChanged && patch.outline) {
       state.outline = patch.outline;
       renderOutline();
-      updatePreviewToc();
     }
-    if (patch.refreshPreview) {
-      state.previewNeedsRefresh = true;
-      requestPreviewBlocks();
-    }
+    if (patch.refreshPreview) state.previewNeedsRefresh = true;
+    if (state.previewNeedsRefresh) requestPreviewBlocks();
+    else if (patch.outlineChanged) updatePreviewToc();
 
     updateStatsUI(patch.stats);
     updateActiveBlockHighlight();
@@ -436,7 +427,7 @@
   }
 
   function requestPreviewBlocks(count = 150) {
-    if (!state.doc || state.blockRequest) return;
+    if (!state.doc || state.blockRequest || state.settings?.viewMode !== "split") return;
     const aroundLine = state.previewTarget;
     const refresh = state.previewNeedsRefresh || aroundLine !== null;
     const end = state.previewStart + state.loadedBlocks;
@@ -466,118 +457,59 @@
     }
   }
 
-  // Live editing uses text offsets. A block split or merge can move the same editor.
-  function detachLiveAnchor() {
-    const live = state.live;
-    if (!live) return false;
-    const focused = document.activeElement === live.editor;
-    live.anchor?.classList.remove("editing-live");
-    live.anchor?.firstElementChild?.classList.remove("hidden");
-    live.wrap.remove();
-    live.anchor = null;
-    return focused;
-  }
-
-  function mountLiveAnchor(restoreFocus = false) {
-    const live = state.live;
-    if (!live) return;
-    const anchor = findBlockForLine(live.baseLine) || elPreviewDoc.firstElementChild;
-    if (!anchor) return;
-    if (anchor !== live.anchor || !anchor.contains(live.wrap)) {
-      restoreFocus = detachLiveAnchor() || restoreFocus;
-      live.anchor = anchor;
-      anchor.classList.add("editing-live");
-      anchor.append(live.wrap);
+  function mountLiveEditor(focus = false) {
+    if (!state.doc || state.settings?.viewMode !== "live") return;
+    if (!state.live) {
+      state.live = window.MTLiveEditor.create(elLiveHost, {
+        text: state.prevText,
+        label: t("editorPlaceholder"),
+        renderMath: renderKatexCached,
+        showLineNumbers: state.settings.showLineNumbers,
+        startLine: state.windowStartLine,
+        onEdit(startChar, endChar, text, lines) {
+          state.windowEndLine = state.windowStartLine + lines;
+          state.previewNeedsRefresh = true;
+          sendEdit(state.windowStartLine, { startChar, endChar, text }, true);
+        },
+        onCursor(line, prefix) {
+          state.activeLine = state.windowStartLine + line - 1;
+          const col = utf16ToScalarCount(prefix, prefix.length) + 1;
+          $("st-cursor").textContent = t("stCursor", { ln: state.activeLine + 1, col });
+          updateActiveBlockHighlight();
+        },
+      });
     }
-    const content = anchor.firstElementChild;
-    const containsLine = !anchor.dataset.blockId ||
-      (Number(anchor.dataset.startLine) <= live.baseLine && live.baseLine < Number(anchor.dataset.endLine));
-    content.classList.toggle("hidden", containsLine);
-    const math = containsLine && content.querySelector(".mt-math-block, .mt-math-inline");
-    const mathHtml = math ? content.innerHTML : "";
-    if (mathHtml !== live.mathHtml) {
-      live.mathHtml = mathHtml;
-      live.math.innerHTML = mathHtml;
-      live.math.classList.toggle("hidden", !mathHtml);
+    state.live.configureGutter(state.settings.showLineNumbers, state.windowStartLine);
+    state.live.setReadOnly(elSourceEditor.readOnly);
+    if (focus) state.live.focus();
+  }
+
+  function unmountLiveEditor(keepText = false) {
+    if (!state.live) return;
+    if (keepText) {
+      const { text, selection } = state.live;
+      state.prevText = text;
+      elSourceEditor.value = text;
+      elSourceEditor.setSelectionRange(selection.from, selection.to);
     }
-    if (restoreFocus && document.activeElement !== live.editor) live.editor.focus({ preventScroll: true });
-  }
-
-  function enterLiveBlockEdit(block, focusAtEnd = true) {
-    if (state.settings?.viewMode !== "live" || !state.doc || state.pendingSourceEdit) return;
-    if (state.live?.anchor === block) return;
-    exitLiveBlockEdit();
-    const baseLine = Number(block.dataset.startLine || 0);
-    const wrap = document.createElement("div");
-    wrap.className = "mt-live-editor-wrap";
-    const input = document.createElement("div");
-    input.className = "mt-live-input";
-    const overlay = document.createElement("div");
-    overlay.className = "mt-live-source";
-    overlay.setAttribute("aria-hidden", "true");
-    const highlight = new window.MTSourceHighlight(overlay);
-    const editor = document.createElement("textarea");
-    editor.className = "mt-live-textarea";
-    editor.value = block.dataset.source ?? "";
-    editor.spellcheck = false;
-    editor.setAttribute("aria-label", t("liveEmptyPlaceholder"));
-    const math = document.createElement("div");
-    math.className = "mt-live-math-preview hidden";
-    input.append(overlay, editor);
-    wrap.append(input, math);
-
-    const live = { baseLine, wrap, editor, math, mathHtml: "", text: editor.value, anchor: null };
-    state.live = live;
-    mountLiveAnchor(true);
-    const resize = () => {
-      highlight.update(editor.value, "", baseLine === 0);
-      editor.style.height = "auto";
-      editor.style.height = Math.max(28, editor.scrollHeight) + "px";
-    };
-    resize();
-    const position = focusAtEnd ? editor.value.length : 0;
-    editor.setSelectionRange(position, position);
-
-    editor.addEventListener("input", () => {
-      if (state.live !== live) return;
-      const diff = computeMinimalDiff(live.text, editor.value);
-      live.text = editor.value;
-      resize();
-      if (diff) sendEdit(baseLine, diff, sourceRequestOptions());
-    });
-    editor.addEventListener("keydown", (event) => {
-      if (event.isComposing) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        exitLiveBlockEdit();
-        return;
-      }
-      const direction = event.key === "ArrowUp" && editor.selectionEnd === 0 ? -1 :
-        event.key === "ArrowDown" && editor.selectionStart === editor.value.length ? 1 : 0;
-      const next = direction < 0 ? live.anchor.previousElementSibling :
-        direction > 0 ? live.anchor.nextElementSibling : null;
-      if (next?.classList.contains("mt-block")) {
-        event.preventDefault();
-        enterLiveBlockEdit(next, direction < 0);
-      }
-    });
-  }
-
-  function exitLiveBlockEdit() {
-    detachLiveAnchor();
+    state.live.destroy();
     state.live = null;
+  }
+
+  function setSourceReadOnly(value) {
+    elSourceEditor.readOnly = value;
+    state.live?.setReadOnly(value);
   }
 
   function sourceRequestOptions() {
     return { startLine: state.windowStartLine, count: state.largeMode ? 600 : null };
   }
 
-  function sendEdit(baseLine, diff, source = null) {
+  function sendEdit(baseLine, diff, utf16 = false) {
     if (!state.doc) return;
     state.pendingEdits++;
     invalidateSearch();
-    send({ cmd: "edit", docId: state.activeTabId, baseLine, ...diff, source });
+    send({ cmd: "edit", docId: state.activeTabId, baseLine, ...diff, utf16 });
   }
 
   // ===== Theme & Kite Wallpaper Application =====
@@ -589,7 +521,7 @@
       currEl.removeAttribute("src");
       return;
     }
-    if (currEl.src === url && currEl.classList.contains("visible")) {
+    if (currEl.getAttribute("src") === url && currEl.classList.contains("visible")) {
       currEl.style.opacity = String(opacity);
       return;
     }
@@ -712,7 +644,9 @@
 
   function applySettingsUI(s) {
     if (!s) return;
-    if (s.viewMode !== "live") exitLiveBlockEdit();
+    const modeChanged = state.settings?.viewMode !== s.viewMode;
+    const editorFocused = document.activeElement === elSourceEditor || elLiveHost.contains(document.activeElement);
+    if (s.viewMode !== "live") unmountLiveEditor(true);
     state.settings = s;
     const root = document.documentElement.style;
 
@@ -723,7 +657,7 @@
     document.body.classList.toggle("focus-mode", !!s.focusMode);
     document.body.classList.toggle("reduce-motion", !!s.reduceMotion);
 
-    elLineGutter.classList.toggle("hidden-gutter", !s.showLineNumbers);
+    elSourcePane.classList.toggle("show-line-numbers", s.showLineNumbers);
     elSidebar.classList.toggle("collapsed", !s.sidebarOpen);
     $("btn-sidebar").classList.toggle("active", !!s.sidebarOpen);
 
@@ -740,6 +674,22 @@
     // Split ratio
     if (s.viewMode === "split") {
       elSourcePane.style.flex = `0 0 ${(s.splitRatio * 100).toFixed(1)}%`;
+      if (modeChanged && state.previewNeedsRefresh) {
+        state.previewTarget = state.activeLine;
+        requestPreviewBlocks();
+      }
+    }
+    if (s.viewMode === "live") {
+      mountLiveEditor();
+      if (modeChanged && state.live) {
+        const selection = elSourceEditor.value.slice(0, elSourceEditor.selectionStart).split("\n");
+        state.live.select(selection.length - 1, Array.from(selection.at(-1)).length,
+          undefined, undefined, editorFocused);
+      }
+    } else if (modeChanged && state.doc) {
+      updateSourceOverlayAndGutter();
+      updateCursorStatus(false);
+      if (editorFocused) elSourceEditor.focus({ preventScroll: true });
     }
 
     // Toolbar toggles
@@ -811,7 +761,6 @@
       el.title = tab.path || tab.title;
       el.onclick = () => {
         if (tab.id !== state.activeTabId) {
-          exitLiveBlockEdit();
           send({ cmd: "switchTab", id: tab.id });
         }
         closeSettings();
@@ -841,7 +790,7 @@
     const add = document.createElement("button");
     add.className = "tab-add-btn";
     add.textContent = "+";
-    add.title = t("newTabTitle");
+    add.title = platformShortcut(t("newTabTitle"));
     add.onclick = () => {
       closeSettings();
       send({ cmd: "newTab" });
@@ -919,12 +868,11 @@
     if (!stats) return;
     $("st-words").textContent = t("stWords", { n: stats.words.toLocaleString() });
     $("st-chars").textContent = t("stChars", { n: stats.chars.toLocaleString() });
-    $("st-read").textContent = t("stRead", { n: stats.readingMinutes });
     $("st-large-badge").classList.toggle("hidden", !stats.largeMode);
   }
 
   function loadDocumentSnapshot(doc) {
-    exitLiveBlockEdit();
+    unmountLiveEditor();
     state.doc = doc;
     state.sourceRequest = null;
     state.pendingSourceEdit = false;
@@ -938,6 +886,8 @@
     if (!doc) {
       elEmptyView.classList.remove("hidden");
       elEditorView.classList.add("hidden");
+      $("st-cursor").textContent = "—";
+      updateStatsUI({ words: 0, chars: 0, largeMode: false });
       state.outline = [];
       state.totalBlocks = 0;
       state.loadedBlocks = 0;
@@ -965,10 +915,12 @@
     updateStatsUI(doc.stats);
     updateLargeBar();
     renderFileTree();
-    updateCursorStatus();
+    if (!state.live) updateCursorStatus();
   }
 
   function applySourceWindow(source) {
+    const liveFocused = elLiveHost.contains(document.activeElement);
+    unmountLiveEditor();
     state.windowStartLine = source.startLine;
     state.windowEndLine = source.endLine;
     state.totalLines = source.totalLines;
@@ -979,7 +931,8 @@
       elSourceEditor.value = source.text;
       elSourceEditor.setSelectionRange(position, position);
     }
-    updateSourceOverlayAndGutter();
+    if (state.settings?.viewMode === "live") mountLiveEditor(liveFocused);
+    else updateSourceOverlayAndGutter();
     updateLargeBar();
   }
 
@@ -1115,7 +1068,6 @@
   function mirrorSourceScroll() {
     elSourceHighlight.scrollTop = elSourceEditor.scrollTop;
     elSourceHighlight.scrollLeft = elSourceEditor.scrollLeft;
-    elLineGutter.scrollTop = elSourceEditor.scrollTop;
   }
 
   function syncScrollFrom(element) {
@@ -1173,9 +1125,14 @@
   }
 
   function applySourceSelection(target) {
+    if (state.live) {
+      state.live.select(target.line - state.windowStartLine, target.col,
+        (target.endLine ?? target.line) - state.windowStartLine, target.endCol, target.focus);
+      return;
+    }
     const start = sourceOffset(target.line, target.col || 0);
     const end = sourceOffset(target.endLine ?? target.line, target.endCol ?? target.col ?? 0);
-    if (target.focus && state.settings?.viewMode !== "live") elSourceEditor.focus({ preventScroll: true });
+    if (target.focus) elSourceEditor.focus({ preventScroll: true });
     elSourceEditor.setSelectionRange(start, end);
     setSyncedScroll(elSourceEditor, Math.max(0, sourcePixelAtLine(target.line) - 36));
     state.activeLine = target.line;
@@ -1186,13 +1143,12 @@
     if (!state.doc) return;
     const request = ++requestSequence;
     state.sourceRequest = { request, target };
-    elSourceEditor.readOnly = true;
+    setSourceReadOnly(true);
     send({ cmd: "fetchLines", docId: state.activeTabId, startLine, count: 600, request });
   }
 
   function jumpToLine(line, match = null, focus = true) {
     if (!state.doc) return;
-    exitLiveBlockEdit();
     line = Math.min(state.totalLines - 1, Math.max(0, Math.trunc(line)));
     const target = { ...match, line, focus };
     if (state.largeMode && (line < state.windowStartLine || line >= state.windowEndLine)) {
@@ -1200,7 +1156,7 @@
     } else {
       applySourceSelection(target);
     }
-    showPreviewLine(line);
+    if (state.settings?.viewMode === "split") showPreviewLine(line);
     updateActiveBlockHighlight();
   }
 
@@ -1326,36 +1282,35 @@
 
   // ===== Formatting Commands =====
   function applyFormat(fmt) {
-    if (state.settings && state.settings.viewMode === "live") {
-      // Focus active block or switch to split if none
-      const activeTa = elPreviewDoc.querySelector(".mt-live-textarea");
-      if (activeTa) {
-        wrapTextareaFormat(activeTa, fmt);
-        return;
-      }
+    if (elSourceEditor.readOnly) return;
+    if (state.live) {
+      const live = state.live;
+      const { from, to } = live.selection;
+      live.focus();
+      formatSelection(fmt, from, to, live.slice(from, to), live.lineStart(from), live.replace);
+      return;
     }
-    elSourceEditor.focus();
-    wrapTextareaFormat(elSourceEditor, fmt);
-  }
-
-  function wrapTextareaFormat(ta, fmt) {
+    const ta = elSourceEditor;
+    ta.focus();
     const s = ta.selectionStart;
     const e = ta.selectionEnd;
-    const sel = ta.value.slice(s, e);
+    const lineStart = ta.value.lastIndexOf("\n", s - 1) + 1;
+    formatSelection(fmt, s, e, ta.value.slice(s, e), lineStart,
+      (from, to, value, anchor = from + value.length, head = anchor) => {
+        ta.setRangeText(value, from, to, "end");
+        ta.setSelectionRange(anchor, head);
+        ta.dispatchEvent(new Event("input"));
+      });
+  }
+
+  function formatSelection(fmt, s, e, sel, lineStart, replace) {
     const wrap = (l, r, fallback) => {
       const inner = sel || fallback;
-      ta.setRangeText(l + inner + r, s, e, "end");
-      if (!sel) {
-        ta.selectionStart = s + l.length;
-        ta.selectionEnd = s + l.length + inner.length;
-      }
-      ta.dispatchEvent(new Event("input"));
+      const value = l + inner + r;
+      if (sel) replace(s, e, value);
+      else replace(s, e, value, s + l.length, s + l.length + inner.length);
     };
-    const prefixLine = (prefix) => {
-      const lineStart = ta.value.lastIndexOf("\n", s - 1) + 1;
-      ta.setRangeText(prefix, lineStart, lineStart, "end");
-      ta.dispatchEvent(new Event("input"));
-    };
+    const prefixLine = (prefix) => replace(lineStart, lineStart, prefix);
 
     switch (fmt) {
       case "bold": wrap("**", "**", "bold text"); break;
@@ -1431,23 +1386,11 @@
       return;
     }
 
-    // 4. Block click -> Live Mode in-place edit OR Split Mode cursor sync
-    const blockEl = e.target.closest(".mt-block, .mt-live-empty");
-    if (!blockEl) return;
-    if (state.settings && state.settings.viewMode === "live") {
-      if (!e.target.closest(".mt-live-editor-wrap") && !e.target.closest("a")) {
-        enterLiveBlockEdit(blockEl, true);
-      }
-    } else if (state.settings?.viewMode === "split" && blockEl.dataset.startLine !== undefined) {
+    const blockEl = e.target.closest(".mt-block");
+    if (state.settings?.viewMode === "split" && blockEl) {
       const startLine = Number(blockEl.dataset.startLine);
       state.activeLine = startLine;
       updateActiveBlockHighlight();
-    }
-  });
-
-  document.addEventListener("mousedown", (e) => {
-    if (state.live && !state.live.wrap.contains(e.target) && !e.target.closest(".format-bar")) {
-      exitLiveBlockEdit();
     }
   });
 
@@ -1476,7 +1419,6 @@
 
   // ===== Settings Overlay & Sidebar Tabs =====
   function openSettings() {
-    exitLiveBlockEdit();
     state.settingsOpen = true;
     elSettingsView.classList.remove("hidden");
     $("workspace").inert = true;
@@ -1564,14 +1506,13 @@
   function beginSourceAction() {
     if (!state.doc || state.pendingSourceEdit || state.pendingEdits || state.sourceRequest) return false;
     state.pendingSourceEdit = true;
-    elSourceEditor.readOnly = true;
-    exitLiveBlockEdit();
+    setSourceReadOnly(true);
     return true;
   }
 
   function endSourceAction() {
     state.pendingSourceEdit = false;
-    elSourceEditor.readOnly = Boolean(state.sourceRequest);
+    setSourceReadOnly(Boolean(state.sourceRequest));
   }
 
   // Text menus stay under the title bar and close on activation, Escape or an outside click.
@@ -1626,7 +1567,8 @@
       new Promise((resolve) => { timeout = setTimeout(resolve, 5000); }),
     ]);
     clearTimeout(timeout);
-    window.print();
+    if (state.platform === "windows") window.print();
+    else send({ cmd: "windowPrint" });
   }
 
   // Menu and settings actions.
@@ -1683,12 +1625,13 @@
   // ===== Frameless Window Chrome Controls, Drag & Edge Resize =====
   const elTopbar = $("topbar");
   elTopbar.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
+    if (state.platform !== "windows" || e.button !== 0) return;
     if (e.target.closest("button, input, .doc-tab, .mode-switch")) return;
     e.preventDefault();
     send({ cmd: "windowDrag" });
   });
   elTopbar.addEventListener("dblclick", (e) => {
+    if (state.platform !== "windows") return;
     if (e.target.closest("button, input, .doc-tab, .mode-switch")) return;
     send({ cmd: "windowToggleMaximize" });
   });
@@ -1890,7 +1833,9 @@
     if (!mod) return;
 
     const k = e.key.toLowerCase();
-    if (k === ",") { e.preventDefault(); state.settingsOpen ? closeSettings() : openSettings(); }
+    if (state.platform === "macos" && k === "q") { e.preventDefault(); send({ cmd: "windowClose" }); }
+    else if (state.platform === "macos" && k === "w") { e.preventDefault(); $("menu-close-tab").click(); }
+    else if (k === ",") { e.preventDefault(); state.settingsOpen ? closeSettings() : openSettings(); }
     else if (k === "s") { e.preventDefault(); send({ cmd: "save", saveAs: e.shiftKey }); }
     else if (k === "o") { e.preventDefault(); send({ cmd: "openFileDialog" }); }
     else if (k === "n") { e.preventDefault(); closeSettings(); send({ cmd: "newTab" }); }
@@ -1918,11 +1863,21 @@
     else if (k === "0") { e.preventDefault(); $("font-reset").click(); }
   });
 
-  // ===== Rust -> WebView2 Event Receiver =====
+  // ===== Rust -> WebView Event Receiver =====
   window.__mtReceive = function (msg) {
     if (!msg || !msg.event) return;
     switch (msg.event) {
       case "init":
+        state.platform = msg.platform || "windows";
+        document.body.classList.toggle("native-chrome", state.platform !== "windows");
+        if (state.platform === "macos") {
+          document.querySelectorAll(".app-menu kbd, .shortcut-grid kbd").forEach((el) => {
+            el.textContent = platformShortcut(el.textContent);
+          });
+          document.querySelectorAll("[title]:not([data-i18n-title])").forEach((el) => {
+            el.title = platformShortcut(el.title);
+          });
+        }
         if (msg.version) {
           const version = $("about-version");
           version.textContent = "v" + msg.version;
@@ -1948,7 +1903,7 @@
           endSourceAction();
           invalidateSearch();
         }
-        applyIncrementalPatch(msg.patch);
+        applyIncrementalPatch(msg.patch, msg.deferredPreview);
         const tab = state.tabs.find((item) => item.id === msg.docId);
         if (tab && !tab.dirty && msg.dirty) {
           tab.dirty = true;
@@ -1975,6 +1930,7 @@
           state.previewNeedsRefresh = false;
           const target = state.previewTarget ?? translatePreview(elPreviewPane.scrollTop, "y", "line");
           replacePreviewBlocks(msg.blocks, msg.start);
+          updatePreviewToc();
           updateActiveBlockHighlight();
           showPreviewLine(target);
         } else if (msg.start === state.previewStart + state.loadedBlocks) {
@@ -1993,10 +1949,12 @@
         if (msg.docId !== state.activeTabId || msg.request !== state.sourceRequest?.request) break;
         const target = state.sourceRequest.target;
         state.sourceRequest = null;
-        elSourceEditor.readOnly = state.pendingSourceEdit;
+        setSourceReadOnly(state.pendingSourceEdit);
         applySourceWindow(msg.source);
         if (target) applySourceSelection(target);
-        else {
+        else if (state.live) {
+          state.live.select(0);
+        } else {
           elSourceEditor.setSelectionRange(0, 0);
           setSyncedScroll(elSourceEditor, 0);
           updateCursorStatus(false);
@@ -2073,10 +2031,9 @@
           const path = msg.path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/");
           const name = (msg.path.split(/[\\/]/).pop() || "image").replace(/[[\]\\]/g, "\\$&");
           const image = "\n![" + name + "](<" + path + ">)\n";
-          const liveEditor = state.live?.editor;
-          if (liveEditor) {
-            liveEditor.setRangeText(image, liveEditor.selectionStart, liveEditor.selectionEnd, "end");
-            liveEditor.dispatchEvent(new Event("input"));
+          if (state.live) {
+            const { from, to } = state.live.selection;
+            state.live.replace(from, to, image);
           } else {
             replaceEditorSelection(image);
           }

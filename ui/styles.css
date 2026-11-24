@@ -1,34 +1,34 @@
 @font-face {
   font-family: "Geist";
-  src: url("http://marktype.localhost/fonts/Geist.ttf") format("truetype");
+  src: url("/fonts/Geist.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "Geist";
-  src: url("http://marktype.localhost/fonts/Geist-Medium.ttf") format("truetype");
+  src: url("/fonts/Geist-Medium.ttf") format("truetype");
   font-weight: 500;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "Geist";
-  src: url("http://marktype.localhost/fonts/Geist-SemiBold.ttf") format("truetype");
+  src: url("/fonts/Geist-SemiBold.ttf") format("truetype");
   font-weight: 600;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "Geist Mono";
-  src: url("http://marktype.localhost/fonts/GeistMono.ttf") format("truetype");
+  src: url("/fonts/GeistMono.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "Geist Mono";
-  src: url("http://marktype.localhost/fonts/GeistMono-Bold.ttf") format("truetype");
+  src: url("/fonts/GeistMono-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
@@ -139,7 +139,8 @@ html, body {
 .resize-handle.se { bottom: 0; right: 0; width: 9px; height: 9px; cursor: nwse-resize; }
 .resize-handle.sw { bottom: 0; left: 0; width: 9px; height: 9px; cursor: nesw-resize; }
 
-body.maximized .resize-handle {
+body.maximized .resize-handle,
+body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
   display: none;
 }
 
@@ -877,12 +878,12 @@ body.maximized .resize-handle {
 }
 
 .panes-wrap.mode-live .source-pane,
-.panes-wrap.mode-live .split-divider {
+.panes-wrap.mode-live .split-divider,
+.panes-wrap.mode-live .preview-pane {
   display: none;
 }
 
-.panes-wrap.mode-source .source-pane,
-.panes-wrap.mode-live .preview-pane {
+.panes-wrap.mode-source .source-pane {
   flex: 1 !important;
   width: 100% !important;
 }
@@ -897,23 +898,8 @@ body.maximized .resize-handle {
   overflow: hidden;
 }
 
-.line-gutter {
-  width: 48px;
-  flex-shrink: 0;
-  padding: 24px 10px 24px 4px;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--editor-font-size);
-  line-height: var(--line-height);
-  white-space: pre;
-  color: var(--faint);
-  border-right: 1px solid var(--hairline);
-  overflow: hidden;
-  user-select: none;
-}
-
-.line-gutter.hidden-gutter {
-  display: none;
+.source-pane.show-line-numbers {
+  --source-gutter-width: calc(var(--editor-font-size) * 2.5);
 }
 
 .source-scroll-host {
@@ -929,6 +915,7 @@ body.maximized .resize-handle {
   inset: 0;
   margin: 0;
   padding: 24px 26px 40vh;
+  padding-inline-start: calc(22px + var(--source-gutter-width, 0px));
   width: 100%;
   height: 100%;
   font-family: var(--font-mono);
@@ -949,10 +936,23 @@ body.maximized .resize-handle {
   pointer-events: none;
   color: var(--text);
   z-index: 1;
+  counter-reset: source-line var(--source-first-line, 0);
 }
 
 .source-line {
   min-height: 1lh;
+}
+
+.show-line-numbers .source-line { position: relative; counter-increment: source-line; }
+
+.show-line-numbers .source-line::before {
+  content: counter(source-line);
+  position: absolute;
+  inset-inline-end: calc(100% + 14px);
+  font-size: 0.8em;
+  line-height: calc(var(--editor-font-size) * var(--line-height));
+  color: color-mix(in srgb, var(--faint) 75%, transparent);
+  user-select: none;
 }
 
 .source-highlight::-webkit-scrollbar,
@@ -1040,83 +1040,69 @@ body.maximized .resize-handle {
   transition: opacity 150ms ease;
 }
 
-.mt-live-empty-label { color: var(--faint); cursor: text; }
+.mt-preview-empty-label { color: var(--faint); }
 
 .app-menu button:disabled { opacity: 0.5; cursor: default; }
 
-.panes-wrap.mode-live .mt-block:hover {
-  cursor: text;
-}
+body.focus-mode .mt-block:not(.active-block) { opacity: 0.25; }
 
-/* Focus Mode */
-body.focus-mode .mt-block {
-  opacity: 0.25;
-}
-body.focus-mode .mt-block.active-block,
-body.focus-mode .mt-block.editing-live {
-  opacity: 1;
-}
-
-/* Typora Live Mode Inline Block Editor */
-.mt-live-editor-wrap {
-  margin: 4px 0;
-  padding: 10px 12px;
-  border-radius: 9px;
-  background: var(--code-bg);
-  border: 1.5px solid var(--accent);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.16);
-}
-
-.mt-live-textarea {
-  width: 100%;
-  min-height: 28px;
-  border: none;
-  outline: none;
-  resize: none;
-  background: transparent;
+.live-editor-host {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  background: var(--preview-panel);
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: var(--editor-font-size);
-  line-height: 1.6;
-  overflow: hidden;
 }
 
-.mt-live-input {
-  position: relative;
-}
+.mode-live .live-editor-host { display: block; }
 
-.mt-live-source,
-.mt-live-textarea {
-  display: block;
-  margin: 0;
-  padding: 0;
+.live-editor-host .cm-editor {
+  height: 100%;
   font: var(--editor-font-size)/var(--line-height) var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  tab-size: 4;
+  outline: none;
 }
 
-.mt-live-source {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
+.live-editor-host .cm-scroller {
+  font: inherit;
+  padding-inline: max(12px, calc((100% - var(--preview-max-width) - 100px) / 2));
 }
-
-.mt-live-textarea {
-  position: relative;
-  color: transparent;
-  caret-color: var(--accent);
+.live-editor-host .cm-content {
+  flex: 1;
+  min-width: 0;
+  padding: 24px 12px 42vh;
+  caret-color: var(--text);
 }
-
-.mt-live-textarea::selection { background: var(--accent-soft); }
-
-.mt-live-math-preview {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--hairline);
-  overflow-x: auto;
+.live-editor-host .cm-line { padding: 0; }
+.live-editor-host .cm-cursor { border-left-color: var(--text); }
+.live-editor-host .cm-editor .cm-gutters {
+  background: transparent;
+  border: none;
+  color: color-mix(in srgb, var(--faint) 75%, transparent);
+  font: inherit;
 }
+.live-editor-host .cm-lineNumbers .cm-gutterElement {
+  font-size: 0.8em;
+  line-height: calc(var(--editor-font-size) * var(--line-height));
+}
+.live-editor-host .cm-selectionBackground,
+.live-editor-host .cm-editor.cm-focused .cm-selectionBackground { background: var(--accent-soft); }
+.live-editor-host .cm-line > span { vertical-align: baseline; }
+.live-editor-host .cm-widgetBlock { padding: 0 12px; }
+.cm-live-heading-1, .cm-live-heading-2, .cm-live-heading-3,
+.cm-live-heading-4, .cm-live-heading-5, .cm-live-heading-6, .cm-live-strong,
+.cm-live-table-header { font-weight: 700; color: var(--text); }
+.cm-live-heading-1 { font-size: 1.8em; }
+.cm-live-heading-2 { font-size: 1.45em; }
+.cm-live-heading-3 { font-size: 1.2em; }
+.cm-live-em { font-style: italic; }
+.cm-live-strike { text-decoration: line-through; }
+.cm-live-link { color: var(--accent); }
+.cm-live-quote { color: var(--muted); }
+.cm-live-code, .cm-live-fence { background: var(--code-bg); border-radius: 3px; }
+.cm-live-code { padding: 0 0.2em; }
+.cm-live-math-inline, .cm-live-math-block { color: var(--text); }
+.cm-live-math-block { padding: 12px 0; overflow-x: auto; overflow-y: hidden; }
+.cm-live-math-block .katex-display { margin: 0.35em 0; }
 
 /* ===== Typora Prose Typography ===== */
 .preview-doc h1,
@@ -1471,7 +1457,9 @@ body.focus-mode .mt-block.editing-live {
   position: absolute;
   inset: 0;
   z-index: 40;
+  background: var(--shell-panel);
   background: color-mix(in srgb, var(--shell) 87%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(115%);
   backdrop-filter: blur(20px) saturate(115%);
   display: flex;
   overflow: hidden;

@@ -248,10 +248,8 @@ impl AppState {
                 .as_ref()
                 .and_then(|c| gallery::builtin_thumbnail(c, b).ok())
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .map(|f| format!("http://marktype.localhost/wallpaper/thumb/{f}"))
-                .unwrap_or_else(|| {
-                    format!("http://marktype.localhost/wallpaper/builtin/{}.jpg", b.id)
-                });
+                .map(|f| format!("/wallpaper/thumb/{f}"))
+                .unwrap_or_else(|| format!("/wallpaper/builtin/{}.jpg", b.id));
             tiles.push(WallpaperTile {
                 kind: "builtin",
                 id: b.id.to_string(),
@@ -275,7 +273,7 @@ impl AppState {
                 .as_ref()
                 .and_then(|c| gallery::file_thumbnail(c, rp).ok())
                 .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .map(|f| format!("http://marktype.localhost/wallpaper/thumb/{f}"))
+                .map(|f| format!("/wallpaper/thumb/{f}"))
                 .unwrap_or_default();
             tiles.push(WallpaperTile {
                 kind: "recent",
@@ -297,20 +295,14 @@ impl AppState {
         };
 
         let image_url = self.prepared_wp.as_ref().and_then(|p| {
-            p.image.file_name().map(|n| {
-                format!(
-                    "http://marktype.localhost/wallpaper/cache/{}",
-                    n.to_string_lossy()
-                )
-            })
+            p.image
+                .file_name()
+                .map(|n| format!("/wallpaper/cache/{}", n.to_string_lossy()))
         });
         let blurred_url = self.prepared_wp.as_ref().and_then(|p| {
-            p.blurred.file_name().map(|n| {
-                format!(
-                    "http://marktype.localhost/wallpaper/cache/{}",
-                    n.to_string_lossy()
-                )
-            })
+            p.blurred
+                .file_name()
+                .map(|n| format!("/wallpaper/cache/{}", n.to_string_lossy()))
         });
 
         WallpaperStatePayload {
@@ -615,6 +607,7 @@ impl AppState {
                 json!({
                     "event": "init",
                     "version": env!("CARGO_PKG_VERSION"),
+                    "platform": std::env::consts::OS,
                     "settings": self.settings,
                     "tabs": tabs,
                     "activeTabId": self.active_doc().map(|d| d.id.clone()),
@@ -631,6 +624,7 @@ impl AppState {
                 end_char,
                 text,
                 source,
+                utf16,
             } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
                     return json!({ "event": "noop" });
@@ -638,14 +632,33 @@ impl AppState {
                 let Ok(base_offset) = doc.rope.try_line_to_char(base_line) else {
                     return json!({ "event": "noop" });
                 };
-                let start = base_offset.saturating_add(start_char);
-                let end = base_offset.saturating_add(end_char);
-                if start > end || end > doc.rope.len_chars() {
+                if start_char > end_char {
                     return json!({ "event": "noop" });
                 }
-                let patch = doc.apply_edit(start, end, &text, true);
+                let offset = |relative| {
+                    if utf16 {
+                        let units = doc
+                            .rope
+                            .char_to_utf16_cu(base_offset)
+                            .checked_add(relative)?;
+                        let point = doc.rope.try_utf16_cu_to_char(units).ok()?;
+                        (doc.rope.char_to_utf16_cu(point) == units).then_some(point)
+                    } else {
+                        base_offset
+                            .checked_add(relative)
+                            .filter(|&point| point <= doc.rope.len_chars())
+                    }
+                };
+                let (Some(start), Some(end)) = (offset(start_char), offset(end_char)) else {
+                    return json!({ "event": "noop" });
+                };
+                let patch =
+                    doc.apply_edit_with_preview(start, end, &text, (!utf16).then_some(true));
                 let mut response = patch_response(doc, patch, source);
                 response["userEdit"] = json!(true);
+                if utf16 {
+                    response["deferredPreview"] = json!(true);
+                }
                 response
             }
 
@@ -1259,6 +1272,8 @@ enum IpcCommand {
         end_char: usize,
         text: String,
         source: Option<SourceRequest>,
+        #[serde(default)]
+        utf16: bool,
     },
     ToggleTask {
         doc_id: String,

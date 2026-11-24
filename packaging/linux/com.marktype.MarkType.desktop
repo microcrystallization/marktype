@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MarkType
+Comment=Markdown and LaTeX editor
+Comment[zh_CN]=Markdown 与 LaTeX 编辑器
+Exec=marktype %f
+Icon=com.marktype.MarkType
+Terminal=false
+Categories=Office;TextEditor;
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=com.marktype.MarkType
+StartupNotify=true

@@ -1,5 +1,5 @@
 //! Embedded static assets (UI, KaTeX + 20 math fonts, Geist fonts, and 7 Kite wallpapers)
-//! plus custom protocol router for `http://marktype.localhost/...`.
+//! served by the platform WebView's custom protocol.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -19,11 +19,15 @@ const SYNTAX_CSS: &[u8] = include_bytes!("../ui/syntax.css");
 const I18N_JS: &[u8] = include_bytes!("../ui/i18n.js");
 const SOURCE_JS: &[u8] = include_bytes!("../ui/source.js");
 const APP_JS: &[u8] = include_bytes!("../ui/app.js");
+const CODEMIRROR_JS: &[u8] = include_bytes!("../ui/vendor/codemirror.js");
 
 const KATEX_JS: &[u8] = include_bytes!("../assets/katex/katex.min.js");
 const KATEX_CSS: &[u8] = include_bytes!("../assets/katex/katex.min.css");
 const MHCHEM_JS: &[u8] = include_bytes!("../assets/katex/mhchem.min.js");
+#[cfg(target_os = "windows")]
 pub const APP_URL: &str = "http://marktype.localhost/";
+#[cfg(not(target_os = "windows"))]
+pub const APP_URL: &str = "marktype://localhost/";
 pub const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https: http:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
 #[derive(Default)]
@@ -84,7 +88,7 @@ pub(crate) fn image_url(dest: &str, doc_dir: Option<&Path>) -> Option<String> {
         images.by_path.insert(path, id);
         id
     };
-    Some(format!("{APP_URL}local-image/{id}"))
+    Some(format!("/local-image/{id}"))
 }
 
 fn local_path_in(directory: &Path, relative: &Path) -> Option<PathBuf> {
@@ -219,6 +223,11 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             "application/javascript; charset=utf-8",
             I18N_JS.to_vec(),
         ),
+        "/vendor/codemirror.js" => (
+            200,
+            "application/javascript; charset=utf-8",
+            CODEMIRROR_JS.to_vec(),
+        ),
         "/app.js" => (
             200,
             "application/javascript; charset=utf-8",
@@ -335,9 +344,8 @@ pub fn export_html_template(title: &str, body_html: &str, light: bool) -> String
             })
             .into_owned()
     });
-    static LOCAL_SRC: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"src="http://marktype\.localhost/local-image/(\d+)""#).unwrap()
-    });
+    static LOCAL_SRC: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"src="/local-image/(\d+)""#).unwrap());
     let body_html = LOCAL_SRC.replace_all(body_html, |cap: &Captures<'_>| {
         if let Some((mime, bytes)) = cap[1].parse().ok().and_then(local_image) {
             format!("src=\"data:{mime};base64,{}\"", STANDARD.encode(bytes))

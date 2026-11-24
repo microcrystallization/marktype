@@ -23,6 +23,10 @@ Migrated from [Kite](https://github.com/Kfkcome/kite). All 7 built-in paintings 
 - **Geist** & **Geist Mono** fonts by Vercel — SIL Open Font License 1.1 (`assets/fonts/`).
 - **KaTeX** v0.16.21 & `mhchem` chemistry extension — MIT License (`assets/katex/`).
 
+## Live Editor
+
+- **CodeMirror 6** and **Lezer** power inline editing and Markdown parsing. The bundled editor includes the license texts for CodeMirror, Lezer, and their dependencies (`ui/vendor/codemirror.js`).
+
 ## Windows Installer Translations
 
 - The Simplified and Traditional Chinese translation files are from [Inno Setup 6.7.1](https://github.com/jrsoftware/issrc/tree/cfdf48923178df4b4f040e038b423aa555a61ffc/Files/Languages/Unofficial). The files retain their original attribution and are distributed with the [Inno Setup License](packaging/windows/languages/LICENSE-InnoSetup.txt).

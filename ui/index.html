@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MarkType</title>
-  <link rel="icon" type="image/svg+xml" href="http://marktype.localhost/icon.svg" />
-  <link rel="stylesheet" href="http://marktype.localhost/syntax.css" />
-  <link rel="stylesheet" href="http://marktype.localhost/katex/katex.min.css" />
-  <link rel="stylesheet" href="http://marktype.localhost/styles.css" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="stylesheet" href="/syntax.css" />
+  <link rel="stylesheet" href="/katex/katex.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body class="dark">
   <!-- Invisible 8-direction Frameless Window Resize Handles -->
@@ -31,7 +31,7 @@
     <!-- Seamless Integrated Titlebar / Tabs / Mode Switcher / Window Controls -->
     <header id="topbar" class="topbar">
       <div class="topbar-left">
-        <img class="brand-mark" src="http://marktype.localhost/icon.svg" alt="MarkType" draggable="false" />
+        <img class="brand-mark" src="/icon.svg" alt="MarkType" draggable="false" />
       </div>
 
       <div id="tab-bar" class="tab-bar" role="tablist"></div>
@@ -232,7 +232,6 @@
           <div id="panes-wrap" class="panes-wrap mode-split">
             <!-- Left Source Pane -->
             <div id="source-pane" class="source-pane">
-              <div id="line-gutter" class="line-gutter" aria-hidden="true"></div>
               <div class="source-scroll-host" id="source-scroll-host">
                 <div id="source-highlight" class="source-highlight" aria-hidden="true"></div>
                 <textarea
@@ -251,6 +250,7 @@
             <div id="split-divider" class="split-divider"></div>
 
             <!-- Right Live Rendered Preview / Typora Live Mode Pane -->
+            <div id="live-editor-host" class="live-editor-host"></div>
             <div id="preview-pane" class="preview-pane">
               <article id="preview-doc" class="preview-doc"></article>
               <div id="load-more-wrap" class="load-more-wrap hidden">
@@ -463,13 +463,13 @@
             <!-- About Section -->
             <div id="sec-about" class="settings-section hidden">
               <header class="settings-card about-hero">
-                <img src="http://marktype.localhost/icon.svg" alt="" width="76" height="76" />
+                <img src="/icon.svg" alt="" width="76" height="76" />
                 <div>
                   <div class="about-title">
                     <h2>MarkType</h2>
                     <span id="about-version" class="about-version" hidden></span>
                   </div>
-                  <p data-i18n="aboutDesc">A Windows editor for Markdown and LaTeX with a live preview and offline math rendering.</p>
+                  <p data-i18n="aboutDesc">A desktop editor for Markdown and LaTeX with live preview and offline math rendering.</p>
                 </div>
               </header>
               <div class="about-details">
@@ -513,8 +513,6 @@
         <span id="st-words">0</span>
         <span class="st-dot">·</span>
         <span id="st-chars">0</span>
-        <span class="st-dot">·</span>
-        <span id="st-read">0</span>
       </div>
     </footer>
   </div>
@@ -535,10 +533,11 @@
     </div>
   </dialog>
 
-  <script src="http://marktype.localhost/katex/katex.min.js"></script>
-  <script src="http://marktype.localhost/katex/mhchem.min.js"></script>
-  <script src="http://marktype.localhost/i18n.js"></script>
-  <script src="http://marktype.localhost/source.js"></script>
-  <script src="http://marktype.localhost/app.js"></script>
+  <script src="/katex/katex.min.js"></script>
+  <script src="/katex/mhchem.min.js"></script>
+  <script src="/i18n.js"></script>
+  <script src="/source.js"></script>
+  <script src="/vendor/codemirror.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>

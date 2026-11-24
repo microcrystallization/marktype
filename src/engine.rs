@@ -483,6 +483,16 @@ impl Document {
         insert_text: &str,
         include_source: bool,
     ) -> EditPatch {
+        self.apply_edit_with_preview(start_char, end_char, insert_text, Some(include_source))
+    }
+
+    pub(crate) fn apply_edit_with_preview(
+        &mut self,
+        start_char: usize,
+        end_char: usize,
+        insert_text: &str,
+        include_source: Option<bool>,
+    ) -> EditPatch {
         let t0 = Instant::now();
         let insert_text = normalize_newlines(insert_text);
         let insert_text = insert_text.as_ref();
@@ -645,12 +655,11 @@ impl Document {
         let refresh_preview = check_references && self.refresh_references();
 
         // Render ONLY the newly inserted/updated blocks!
-        let mut inserted = Vec::with_capacity(new_count);
-        for i in b_start..b_start + new_count {
-            if let Some(rb) = self.render_block_index(i, include_source) {
-                inserted.push(rb);
-            }
-        }
+        let inserted = include_source.map_or_else(Vec::new, |include_source| {
+            (b_start..b_start + new_count)
+                .filter_map(|i| self.render_block_index(i, include_source))
+                .collect()
+        });
 
         let outline = if outline_changed {
             Some(self.outline())

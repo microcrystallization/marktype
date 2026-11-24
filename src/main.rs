@@ -1,12 +1,15 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::{ResizeDirection, WindowBuilder};
+use tao::window::{ResizeDirection, Window, WindowBuilder};
 use wry::http::Response;
 use wry::{DragDropEvent, NewWindowResponse, WebViewBuilder};
 
@@ -104,7 +107,7 @@ fn parse_resize_dir(dir: &str) -> Option<ResizeDirection> {
 
 fn is_editor_url(url: &str) -> bool {
     let url = url.split('#').next().unwrap_or(url);
-    url == assets::APP_URL || url == "http://marktype.localhost/index.html"
+    matches!(url.strip_prefix(assets::APP_URL), Some("" | "index.html"))
 }
 
 #[cfg(target_os = "windows")]
@@ -118,25 +121,59 @@ fn with_app_icon(builder: WindowBuilder) -> WindowBuilder {
         .with_taskbar_icon(Some(icon))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn with_app_icon(builder: WindowBuilder) -> WindowBuilder {
+    let icon = image::load_from_memory(include_bytes!("../packaging/windows/icon-256.png"))
+        .expect("Decode the bundled MarkType icon")
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
+    builder.with_window_icon(Some(
+        tao::window::Icon::from_rgba(icon.into_raw(), width, height)
+            .expect("Load the bundled MarkType icon"),
+    ))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn with_app_icon(builder: WindowBuilder) -> WindowBuilder {
     builder
 }
 
+#[cfg(target_os = "linux")]
+fn build_webview(builder: WebViewBuilder<'_>, window: &Window) -> wry::Result<wry::WebView> {
+    use tao::platform::unix::WindowExtUnix;
+    use wry::WebViewBuilderExtUnix;
+
+    builder.build_gtk(window.default_vbox().expect("Get the GTK window content"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_webview(builder: WebViewBuilder<'_>, window: &Window) -> wry::Result<wry::WebView> {
+    builder.build(window)
+}
+
 fn main() {
-    let initial_file = std::env::args_os()
-        .nth(1)
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    let smoke = first.as_deref().is_some_and(|arg| arg == "--smoke-test");
+    let initial_file = if smoke { args.next() } else { first }
         .map(PathBuf::from)
-        .filter(|p| p.is_file());
+        .filter(|path| path.is_file());
+    let smoke_deadline = smoke.then(|| Instant::now() + Duration::from_secs(40));
     let mut state = AppState::new(initial_file);
 
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let mut event_loop_builder = EventLoopBuilder::<UserEvent>::with_user_event();
+    #[cfg(target_os = "linux")]
+    {
+        use tao::platform::unix::EventLoopBuilderExtUnix;
+        event_loop_builder.with_app_id("com.marktype.MarkType");
+    }
+    let event_loop = event_loop_builder.build();
     let proxy_ipc = event_loop.create_proxy();
     let proxy_drop = event_loop.create_proxy();
 
     let window = with_app_icon(WindowBuilder::new())
         .with_title("MarkType")
-        .with_decorations(false)
+        .with_decorations(!cfg!(target_os = "windows"))
         .with_inner_size(LogicalSize::new(1420.0, 900.0))
         .with_min_inner_size(LogicalSize::new(820.0, 560.0))
         .build(&event_loop)
@@ -144,7 +181,7 @@ fn main() {
 
     configure_windows_frameless_chrome(&window, !state.settings.light);
 
-    let webview = WebViewBuilder::new()
+    let builder = WebViewBuilder::new()
         .with_custom_protocol("marktype".into(), |_webview_id, request| {
             let uri = request.uri().to_string();
             let (status, mime, body) = assets::serve_request(&uri);
@@ -184,15 +221,26 @@ fn main() {
                     }
                 }
             }
-            false
+            true
         })
-        .with_devtools(cfg!(debug_assertions))
-        .build(&window)
-        .expect("Failed to initialize WebView2");
+        .with_clipboard(true)
+        .with_devtools(cfg!(debug_assertions));
+    let builder = if smoke {
+        builder.with_initialization_script(include_str!("../tests/fixtures/desktop-smoke.js"))
+    } else {
+        builder
+    };
+    let webview = build_webview(builder, &window).expect("Initialize the platform WebView");
 
     event_loop.run(move |event, _, control_flow| {
+        if smoke_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            eprintln!("WebView smoke test timed out");
+            *control_flow = ControlFlow::ExitWithCode(1);
+            return;
+        }
         *control_flow = state
             .next_autosave()
+            .or(smoke_deadline)
             .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
 
         match event {
@@ -202,6 +250,16 @@ fn main() {
                     && let Some(cmd) = v.get("cmd").and_then(|c| c.as_str())
                 {
                     match cmd {
+                        "smokeResult" if smoke => {
+                            if let Some(error) = v.get("error").and_then(|value| value.as_str()) {
+                                eprintln!("WebView smoke test failed: {error}");
+                                *control_flow = ControlFlow::ExitWithCode(1);
+                            } else {
+                                println!("WebView loaded the document, local assets and KaTeX, then rendered an edit.");
+                                *control_flow = ControlFlow::Exit;
+                            }
+                            return;
+                        }
                         "windowDrag" => {
                             let _ = window.drag_window();
                             return;
@@ -233,6 +291,14 @@ fn main() {
                             handle_response(&webview, control_flow, &state.request_window_close());
                             return;
                         }
+                        "windowPrint" => {
+                            if let Err(error) = webview.print() {
+                                dispatch_json(&webview, &serde_json::json!({
+                                    "event": "toast", "message": format!("Print failed: {error}"),
+                                }));
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -243,6 +309,15 @@ fn main() {
                     configure_windows_frameless_chrome(&window, !state.settings.light);
                 }
                 handle_response(&webview, control_flow, &response);
+            }
+            #[cfg(target_os = "macos")]
+            Event::Opened { urls } => {
+                for path in urls.iter().filter_map(|url| url.to_file_path().ok()) {
+                    let response = state.handle_command(&serde_json::json!({
+                        "cmd": "openPath", "path": path
+                    }).to_string());
+                    handle_response(&webview, control_flow, &response);
+                }
             }
             Event::UserEvent(UserEvent::FileDropped(path)) => {
                 let ext = path
@@ -300,6 +375,7 @@ fn main() {
                 }
                 *control_flow = state
                     .next_autosave()
+                    .or(smoke_deadline)
                     .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
                 let title = state.active_doc().map_or_else(
                     || "MarkType".to_owned(),
