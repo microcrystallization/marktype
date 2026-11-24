@@ -1,28 +1,10 @@
 # Changelog
 
-All notable changes to **MarkType** will be documented in this file.
+## [0.1.0] - 2026-11-24
 
-## [0.1.1] - 2026-11-24
-
-- Introduced a light MarkType icon and a richer About page with the installed version, feature details, and project links.
-- Fixed missing Windows icons in the installed app, desktop and Start Menu shortcuts, and file associations.
-- Improved syntax highlighting, synchronized scrolling, and typography in the editor and preview.
-- Added an in-app save prompt and corrected autosave, search and replace, and full-document printing.
-
-## [0.1.0] - 2026-11-23
-
-### Added
-- **Incremental Rust Markdown + LaTeX Engine**: `ropey::Rope` buffer with O(dirty block) `pulldown-cmark` incremental parsing (`< 0.2 ms` per keystroke on 50,000-line files; `~8 ms` large-file indexing).
-- **Three Seamless View Modes**:
-  - Real-time `<10ms` Split Dual-Pane view (`Ctrl+\`) with bidirectional synchronized scrolling.
-  - Typora-style single-pane Live WYSIWYG mode (`Ctrl+/`) with in-place block editing and live math preview.
-  - Syntax-highlighted Source Code mode (`Ctrl+Shift+/`).
-- **Offline KaTeX + `mhchem` Math & Chemistry**: Inline `$...$`, display `$$...$$`, `\(...\)`, `\[...\]`, matrices, cases, and chemical equations bundled offline.
-- **Full Typora Feature Set**: Outline & File Tree sidebar, multi-tab documents, Focus Mode (`F8`), Typewriter Mode (`F9`), Regex Find & Replace (`Ctrl+F` / `Ctrl+H`), interactive clickable task checkboxes, YAML Front Matter cards, `[TOC]`, Callouts, tables, Rust syntax highlighter, HTML export, and Print/PDF (`Ctrl+P`).
-- **Kite-Inspired Wallpaper & Adaptive Theme System**:
-  - 7 embedded public-domain classical artworks from The Met Open Access + custom PNG/JPEG/WebP import & history.
-  - 5 cached pixel effects (`None`, `Scanlines`, `ASCII`, `Halftone`, `Dither`).
-  - Frosted glass full-window backdrop with WCAG contrast-guarded automatic panel opacity (`0.55–0.92`) and dominant-colour adaptive theme tinting.
-  - 180 ms cubic-bezier wallpaper crossfade & full-bleed sharp Hero Welcome View.
-- **Seamless Frameless Native Window**: Custom integrated titlebar with DWM rounded corners, drop shadow, drag-to-move, double-click maximize, and 8-direction edge resizing.
-- **Multi-Language i18n**: Live switching across 6 languages (`简体中文`, `繁體中文`, `English`, `日本語`, `한국어`, `Français`).
+- Published packages for Windows x64, macOS on Apple Silicon and Intel, and Ubuntu 24.04 x64. GitHub Actions builds and tests each platform and publishes SHA-256 checksums.
+- Added a CodeMirror 6 Live Preview for editing Markdown, rendered equations, and task lists together. The active line shows its Markdown markers. Collapsed equations retain the document's source line numbering.
+- Kept Split and Source editing with syntax highlighting, synchronized scrolling in Split, and windowed loading for large documents.
+- Bundled KaTeX, `mhchem`, and math fonts for offline rendering. The Split preview supports GFM tables, GitHub alerts, front matter, and a table of contents.
+- Improved autosave, find and replace, full-document printing, and the prompt for unsaved changes. Added a light app icon and the About page. Windows shortcuts and file associations use the app icon.
+- Added Chinese and English READMEs with screenshots of the light GitHub theme and Hokusai's *The Great Wave off Kanagawa*. The app includes seven public-domain wallpapers, custom wallpaper import, and six interface languages.

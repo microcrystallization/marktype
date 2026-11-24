@@ -3,7 +3,7 @@
 
 #define MyAppName "MarkType"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.1.0"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\..\target\release"

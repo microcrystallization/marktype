@@ -55,7 +55,7 @@ macOS 上使用 `⌘`。
 
 ## 安装
 
-已发布的 [v0.1.1](https://github.com/microcrystallization/marktype/releases/tag/v0.1.1) 提供 Windows x64 安装程序和便携 ZIP。包含跨平台工作流的分支可从 [Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) 下载相应运行的构建产物。
+Windows、macOS 和 Ubuntu 的安装包及 SHA-256 校验文件可从 [v0.1.0 Release](https://github.com/microcrystallization/marktype/releases/tag/v0.1.0) 下载。
 
 | 系统 | 安装方式 |
 | --- | --- |

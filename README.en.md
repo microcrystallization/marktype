@@ -55,7 +55,7 @@ Use `⌘` on macOS.
 
 ## Install
 
-The published [v0.1.1](https://github.com/microcrystallization/marktype/releases/tag/v0.1.1) has a Windows x64 installer and portable ZIP. For branches with cross-platform packaging, download the appropriate artifact from a [Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) run.
+Download the Windows, macOS, and Ubuntu packages and their SHA-256 checksums from the [v0.1.0 release](https://github.com/microcrystallization/marktype/releases/tag/v0.1.0).
 
 | Platform | Installation |
 | --- | --- |
