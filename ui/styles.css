@@ -1082,9 +1082,10 @@ body.focus-mode .mt-block:not(.active-block) { opacity: 0.25; }
 }
 .live-editor-host .cm-lineNumbers .cm-gutterElement {
   font-size: 0.8em;
+  min-inline-size: calc(var(--live-line-number-width, 3ch) + 8px);
   line-height: calc(var(--editor-font-size) * var(--line-height));
 }
-.live-editor-host .cm-formula-line-number {
+.live-editor-host :is(.cm-formula-line-number, .cm-heading-line-number) {
   display: flex;
   justify-content: end;
   align-items: center;

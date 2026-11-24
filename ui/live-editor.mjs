@@ -1,5 +1,5 @@
-import { Compartment, EditorState, StateField, Transaction } from "@codemirror/state";
-import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, keymap, lineNumberWidgetMarker, lineNumbers } from "@codemirror/view";
+import { Compartment, EditorState, RangeSet, StateField, Transaction } from "@codemirror/state";
+import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, gutterLineClass, keymap, lineNumberWidgetMarker, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
@@ -119,14 +119,18 @@ class Formula extends WidgetType {
 }
 
 class FormulaLineNumber extends GutterMarker {
-  constructor(number) {
+  constructor(first, last) {
     super();
-    this.number = number;
+    this.label = first === last ? String(first) : `${first}–${last}`;
   }
   elementClass = "cm-formula-line-number";
-  eq(other) { return this.number === other.number; }
-  toDOM(view) { return view.dom.ownerDocument.createTextNode(String(this.number)); }
+  eq(other) { return this.label === other.label; }
+  toDOM(view) { return view.dom.ownerDocument.createTextNode(this.label); }
 }
+
+const headingLineNumber = new class extends GutterMarker {
+  elementClass = "cm-heading-line-number";
+}();
 
 class Task extends WidgetType {
   constructor(from, to, checked) {
@@ -164,6 +168,7 @@ const marks = {
   TableHeader: "table-header", TableCell: "table-cell",
 };
 const punctuation = new Set(["HeaderMark", "EmphasisMark", "StrikethroughMark", "CodeMark", "QuoteMark"]);
+const headingNode = /^(?:ATX|Setext)Heading([1-6])$/;
 
 function visibleMarkdown(view, render, lines) {
   const decorations = [];
@@ -196,7 +201,7 @@ function visibleMarkdown(view, render, lines) {
           decorations.push(hiddenMarker.range(from, to + trailingSpace));
           return false;
         }
-        const heading = /^(?:ATX|Setext)Heading([1-6])$/.exec(name);
+        const heading = headingNode.exec(name);
         const style = heading ? "heading-" + heading[1] : marks[name];
         if (style) decorations.push(mark(style).range(Math.max(from, range.from), Math.min(to, range.to)));
       },
@@ -223,39 +228,45 @@ function inlinePreview(render) {
 }
 
 function blockWidgets(render) {
-  function mathRanges(state, tree) {
+  function collectBlocks(state, tree) {
     const ranges = [];
+    const headings = [];
     tree.iterate({
       enter(node) {
         if (node.name === "Document") return;
         if (node.name === "DisplayMath") {
           const tex = mathText(state.sliceDoc(node.from, node.to), true);
           if (tex) ranges.push(Decoration.replace({ block: true, widget: new Formula(tex, true, render) }).range(node.from, node.to));
+        } else if (headingNode.test(node.name)) {
+          headings.push(headingLineNumber.range(state.doc.lineAt(node.from).from));
         }
         return false;
       },
     });
-    return Decoration.set(ranges);
+    return { tree, widgets: Decoration.set(ranges), headings: RangeSet.of(headings) };
   }
-  function layout(tree, widgets, lines) {
-    return { tree, widgets, lines, ranges: widgets.update({
+  function layout(blocks, lines) {
+    return { ...blocks, lines, ranges: blocks.widgets.update({
       filter: (from, to) => !intersects(lines, from, to),
     }) };
   }
   return StateField.define({
     create(state) {
       const tree = syntaxTree(state);
-      return layout(tree, mathRanges(state, tree), selectedLines(state));
+      return layout(collectBlocks(state, tree), selectedLines(state));
     },
     update(previous, transaction) {
       const tree = syntaxTree(transaction.state);
       const lines = transaction.docChanged || transaction.selection ? selectedLines(transaction.state) : previous.lines;
       if (transaction.docChanged || tree !== previous.tree) {
-        return layout(tree, mathRanges(transaction.state, tree), lines);
+        return layout(collectBlocks(transaction.state, tree), lines);
       }
-      return sameLines(previous.lines, lines) ? previous : layout(tree, previous.widgets, lines);
+      return sameLines(previous.lines, lines) ? previous : layout(previous, lines);
     },
-    provide: (field) => EditorView.decorations.from(field, (value) => value.ranges),
+    provide: (field) => [
+      EditorView.decorations.from(field, (value) => value.ranges),
+      gutterLineClass.from(field, (value) => value.headings),
+    ],
   });
 }
 
@@ -280,8 +291,16 @@ function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNum
   let showNumbers = showLineNumbers;
   const gutterExtension = () => showNumbers ? [
     lineNumbers({ formatNumber: (n) => String(n + firstLine) }),
-    lineNumberWidgetMarker.of((view, widget, block) => widget instanceof Formula
-      ? new FormulaLineNumber(view.state.doc.lineAt(block.from).number + firstLine) : null),
+    lineNumberWidgetMarker.of((view, widget, block) => {
+      if (!(widget instanceof Formula)) return null;
+      const { doc } = view.state;
+      return new FormulaLineNumber(doc.lineAt(block.from).number + firstLine,
+        doc.lineAt(block.to).number + firstLine);
+    }),
+    EditorView.editorAttributes.compute(["doc"], ({ doc }) => {
+      const digits = String(firstLine + doc.lines).length;
+      return { style: `--live-line-number-width: ${digits * 2 + 1}ch` };
+    }),
   ] : [];
   const view = new EditorView({
     parent,

@@ -26,9 +26,16 @@ A desktop Markdown and LaTeX editor for Windows, macOS, and Linux.
 
 All screenshots use the light GitHub theme and The Great Wave wallpaper. The document is the [Markdown and LaTeX tour](examples/markdown-tour.md).
 
-| Source editor | Appearance and wallpaper | About |
-| --- | --- | --- |
-| [![Source editor](docs/screenshots/source.webp)](docs/screenshots/source.webp) | [![Light GitHub theme and The Great Wave wallpaper settings](docs/screenshots/appearance.webp)](docs/screenshots/appearance.webp) | [![About MarkType](docs/screenshots/about.webp)](docs/screenshots/about.webp) |
+<details>
+<summary>Source editor, appearance settings, and About</summary>
+
+![Full-width source editor](docs/screenshots/source.webp)
+
+![Light GitHub theme and The Great Wave wallpaper settings](docs/screenshots/appearance.webp)
+
+![About MarkType](docs/screenshots/about.webp)
+
+</details>
 
 ## Writing and export
 

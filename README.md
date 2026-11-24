@@ -26,9 +26,16 @@
 
 以下实拍均使用 GitHub 浅色主题和《神奈川冲浪里》壁纸。示例文档为 [波浪笔记](examples/markdown-tour.md)。
 
-| 源码编辑 | 外观与壁纸 | 关于 |
-| --- | --- | --- |
-| [![源码编辑](docs/screenshots/source.webp)](docs/screenshots/source.webp) | [![GitHub 浅色主题和海浪壁纸设置](docs/screenshots/appearance.webp)](docs/screenshots/appearance.webp) | [![关于 MarkType](docs/screenshots/about.webp)](docs/screenshots/about.webp) |
+<details>
+<summary>源码编辑、外观设置与关于页面</summary>
+
+![全宽源码编辑器](docs/screenshots/source.webp)
+
+![GitHub 浅色主题和海浪壁纸设置](docs/screenshots/appearance.webp)
+
+![关于 MarkType](docs/screenshots/about.webp)
+
+</details>
 
 ## 写作与导出
 
