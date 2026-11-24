@@ -321,12 +321,16 @@ impl AppState {
     }
 
     pub fn active_doc_snapshot(&mut self, max_initial_blocks: usize) -> Value {
+        let split = self.settings.view_mode == ViewMode::Split;
         let Some(doc) = self.active_doc_mut() else {
             return Value::Null;
         };
         let large = doc.is_large();
         let total_blocks = doc.blocks.len();
-        let block_count = if large {
+        let deferred = large && !split;
+        let block_count = if deferred {
+            0
+        } else if large {
             max_initial_blocks.min(total_blocks)
         } else {
             total_blocks
@@ -348,6 +352,7 @@ impl AppState {
             "contextLine": source["contextLine"],
             "text": text,
             "blocks": blocks,
+            "previewDeferred": deferred,
             "totalBlocks": total_blocks,
             "outline": outline,
             "stats": stats,
@@ -684,6 +689,25 @@ impl AppState {
                     Some(patch) => patch_response(doc, patch, Some(source)),
                     None => resync_response(&doc_id),
                 }
+            }
+
+            IpcCommand::RenderLiveWidgets {
+                doc_id,
+                request,
+                fragments,
+            } => {
+                let html = self
+                    .active_doc()
+                    .filter(|doc| doc.id == doc_id)
+                    .map(|doc| {
+                        fragments
+                            .iter()
+                            .take(16)
+                            .map(|source| doc.render_live_fragment(source))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                json!({ "event": "liveWidgetsRendered", "request": request, "html": html })
             }
 
             IpcCommand::FetchBlocks {
@@ -1282,6 +1306,11 @@ enum IpcCommand {
         line_offset: usize,
         source: SourceRequest,
     },
+    RenderLiveWidgets {
+        doc_id: String,
+        request: u64,
+        fragments: Vec<String>,
+    },
     FetchBlocks {
         doc_id: String,
         start: usize,
@@ -1426,6 +1455,55 @@ mod tests {
             Some(dunce::canonicalize(path).unwrap()),
             "original",
         )
+    }
+
+    #[test]
+    fn live_widgets_resolve_document_relative_images_and_references() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("first.md");
+        std::fs::write(directory.path().join("chart.svg"), "<svg/>").unwrap();
+        let doc = Document::new(
+            "first".into(),
+            "first.md".into(),
+            Some(path),
+            "[chart]: chart.svg\n[example]: https://example.com/\n",
+        );
+        let mut state = test_state(vec![doc]);
+        let response = state.handle_command(
+            r#"{"cmd":"renderLiveWidgets","docId":"first","request":10,"fragments":["![A chart][chart]","[Click here][example]"]}"#,
+        );
+        assert_eq!(response["event"], "liveWidgetsRendered");
+        assert_eq!(response["request"], 10);
+        assert!(
+            response["html"][0]
+                .as_str()
+                .unwrap()
+                .contains("/local-image/")
+        );
+        assert!(
+            response["html"][1]
+                .as_str()
+                .unwrap()
+                .contains("https://example.com/")
+        );
+    }
+
+    #[test]
+    fn large_live_snapshot_defers_split_blocks_until_requested() {
+        let doc = Document::new(
+            "first".into(),
+            "first.md".into(),
+            None,
+            &"Paragraph\n\n".repeat(4000),
+        );
+        let mut state = test_state(vec![doc]);
+        state.settings.view_mode = ViewMode::Live;
+        let live = state.active_doc_snapshot(200);
+        assert_eq!(live["previewDeferred"], true);
+        assert_eq!(live["blocks"].as_array().unwrap().len(), 0);
+        assert_eq!(live["windowEndLine"], 600);
+        let split = state.handle_command(r#"{"cmd":"fetchBlocks","docId":"first","start":0,"count":200,"request":10,"refresh":true,"aroundLine":0}"#);
+        assert_eq!(split["blocks"].as_array().unwrap().len(), 200);
     }
 
     #[test]

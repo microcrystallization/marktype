@@ -1,12 +1,11 @@
-import { Compartment, EditorState, RangeSet, StateField, Transaction } from "@codemirror/state";
+import { Compartment, EditorState, RangeSet, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, gutterLineClass, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { HighlightStyle, LanguageDescription, LanguageSupport, StreamLanguage, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
-import { rust } from "@codemirror/lang-rust";
-import { javascript } from "@codemirror/lang-javascript";
 import { GFM } from "@lezer/markdown";
 import { tags } from "@lezer/highlight";
+import { createWidgetRenderer, enableSourceReveal, RenderedMarkdown } from "./live-widgets.mjs";
 
 const highlight = HighlightStyle.define([
   { tag: tags.keyword, class: "hl-kw" },
@@ -16,7 +15,7 @@ const highlight = HighlightStyle.define([
   { tag: [tags.typeName, tags.namespace, tags.className], class: "hl-ty" },
   { tag: [tags.function(tags.variableName), tags.definition(tags.variableName)], class: "hl-fn" },
   { tag: tags.macroName, class: "hl-mac" },
-  { tag: [tags.processingInstruction, tags.url], class: "hl-key" },
+  { tag: [tags.processingInstruction, tags.propertyName, tags.url], class: "hl-key" },
 ]);
 
 function displayDelimiter(text) {
@@ -84,20 +83,9 @@ const math = {
   }],
 };
 
-function selectedLines(state) {
-  return state.selection.ranges.map(({ from, to }) => [
-    state.doc.lineAt(from).from,
-    state.doc.lineAt(to).to,
-  ]);
-}
-
-function intersects(lines, from, to) {
-  return lines.some(([start, end]) => start <= to && end >= from);
-}
-
-function sameLines(first, second) {
+function sameNumbers(first, second) {
   return first.length === second.length &&
-    first.every(([start, end], i) => start === second[i][0] && end === second[i][1]);
+    first.every((number, index) => number === second[index]);
 }
 
 class Formula extends WidgetType {
@@ -112,10 +100,10 @@ class Formula extends WidgetType {
     const element = view.dom.ownerDocument.createElement(this.display ? "div" : "span");
     element.className = this.display ? "cm-live-math-block" : "cm-live-math-inline";
     element.innerHTML = this.render(this.tex, this.display);
+    enableSourceReveal(view, element);
     return element;
   }
   get estimatedHeight() { return this.display ? 52 : -1; }
-  ignoreEvent() { return false; }
 }
 
 const headingLineNumber = new class extends GutterMarker {
@@ -154,104 +142,188 @@ function mark(name) {
 
 const marks = {
   Emphasis: "em", StrongEmphasis: "strong", Strikethrough: "strike",
-  InlineCode: "code", Link: "link", FencedCode: "fence", Blockquote: "quote",
-  TableHeader: "table-header", TableCell: "table-cell",
+  InlineCode: "code", FencedCode: "fence", Blockquote: "quote",
 };
 const punctuation = new Set(["HeaderMark", "EmphasisMark", "StrikethroughMark", "CodeMark", "QuoteMark"]);
 const headingNode = /^(?:ATX|Setext)Heading([1-6])$/;
+const alertMarker = /^>[ \t]*\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/;
+const refreshWidgets = StateEffect.define();
 
-function visibleMarkdown(view, render, lines) {
-  const decorations = [];
+function blockKind(state, node) {
+  if (node.name === "Table") return "table";
+  if (node.name === "Blockquote" && alertMarker.test(state.sliceDoc(node.from, state.doc.lineAt(node.from).to))) {
+    return "callout";
+  }
+  if (node.name === "Paragraph") {
+    const child = node.firstChild;
+    if (child?.name === "Image" && child.from === node.from && child.to === node.to) return "image";
+  }
+  return null;
+}
+
+function linkLabel(state, node) {
+  const markers = node.getChildren("LinkMark");
+  return markers.length < 2 ? "" : state.sliceDoc(markers[0].to, markers[1].from);
+}
+
+function touches(selection, from, to) {
+  return selection.ranges.some((range) => range.from <= to && range.to >= from);
+}
+
+// The syntax tree is visited only when text, parser output, or the visible ranges change.
+function collectInline(view, render, renderer, blocks) {
+  const fixed = [];
+  const marksToHide = [];
+  const seen = new Set();
   const { state } = view;
   const tree = syntaxTree(state);
+
+  function hide(owner, from, to, decoration) {
+    const key = from + ":" + to;
+    if (seen.has(key)) return;
+    seen.add(key);
+    marksToHide.push({ from: owner.from, to: owner.to, range: decoration.range(from, to) });
+  }
+
   for (const range of view.visibleRanges) {
     tree.iterate({
       from: range.from, to: range.to,
       enter(node) {
         const { name, from, to } = node;
         if (to <= from || to <= range.from || from >= range.to) return;
-        const active = intersects(lines, from, to);
-        if (name === "DisplayMath") return false;
-        let visible = !active;
-        if (name === "CodeMark" && node.node.parent?.name === "FencedCode") {
-          visible = false;
-        }
-        if (visible && name === "InlineMath") {
-          decorations.push(Decoration.replace({ widget: new Formula(mathText(state.sliceDoc(from, to), false), false, render) }).range(from, to));
+        const syntax = node.node;
+        if (name === "DisplayMath" || (syntax.parent?.name === "Document" &&
+          blocks.starts.has(from) && !blocks.open.has(from))) return false;
+        if (name === "InlineMath") {
+          hide(syntax, from, to, Decoration.replace({
+            widget: new Formula(mathText(state.sliceDoc(from, to), false), false, render),
+          }));
           return false;
         }
-        if (visible && name === "TaskMarker") {
-          decorations.push(Decoration.replace({ widget: new Task(from, to, state.sliceDoc(from, to) !== "[ ]") }).range(from, to));
+        if (name === "TaskMarker") {
+          hide(syntax, from, to, Decoration.replace({
+            widget: new Task(from, to, state.sliceDoc(from, to) !== "[ ]"),
+          }));
           return false;
         }
-        if (visible && punctuation.has(name)) {
-          // Stay on this line, including when the marker is the closing part of a heading.
+        const explicitLink = name === "Link" && (syntax.getChild("URL") || syntax.getChild("LinkLabel"));
+        if ((name === "Image" || explicitLink) && to <= state.doc.lineAt(from).to) {
+          const kind = name === "Image" ? "image" : "link";
+          hide(syntax, from, to, Decoration.replace({
+            widget: new RenderedMarkdown(state.sliceDoc(from, to), kind, false, renderer, linkLabel(state, syntax)),
+          }));
+          return false;
+        }
+        if (punctuation.has(name) && !(name === "CodeMark" && syntax.parent?.name === "FencedCode")) {
           const line = state.doc.lineAt(to);
-          const trailingSpace = name === "HeaderMark" || name === "QuoteMark" ? /^[ \t]*/.exec(line.text.slice(to - line.from))[0].length : 0;
-          decorations.push(hiddenMarker.range(from, to + trailingSpace));
+          const trailing = name === "HeaderMark" || name === "QuoteMark"
+            ? /^[ \t]*/.exec(line.text.slice(to - line.from))[0].length : 0;
+          const owner = name === "QuoteMark" ? syntax : syntax.parent ?? syntax;
+          hide(owner, from, to + trailing, hiddenMarker);
           return false;
         }
         const heading = headingNode.exec(name);
         const style = heading ? "heading-" + heading[1] : marks[name];
-        if (style) decorations.push(mark(style).range(Math.max(from, range.from), Math.min(to, range.to)));
+        if (style) fixed.push(mark(style).range(Math.max(from, range.from), Math.min(to, range.to)));
       },
     });
   }
-  return Decoration.set(decorations, true);
+  return { fixed, marksToHide };
 }
 
-function inlinePreview(render) {
+function layoutInline({ fixed, marksToHide }, selection, previous) {
+  const open = [];
+  for (let i = 0; i < marksToHide.length; i++) {
+    const { from, to } = marksToHide[i];
+    if (touches(selection, from, to)) open.push(i);
+  }
+  if (previous && sameNumbers(open, previous.open)) return previous;
+  const opened = new Set(open);
+  const decorations = fixed.concat(marksToHide.filter((_, i) => !opened.has(i)).map(({ range }) => range));
+  return { open, decorations: Decoration.set(decorations, true) };
+}
+
+function inlinePreview(render, renderer, blockField) {
   return ViewPlugin.fromClass(class {
     constructor(view) {
-      this.lines = selectedLines(view.state);
-      this.decorations = visibleMarkdown(view, render, this.lines);
+      this.rebuild(view);
+    }
+    rebuild(view) {
+      this.candidates = collectInline(view, render, renderer, view.state.field(blockField));
+      this.layout = layoutInline(this.candidates, view.state.selection);
     }
     update(update) {
-      const lines = update.selectionSet || update.docChanged ? selectedLines(update.state) : this.lines;
-      if (update.docChanged || update.viewportChanged || !sameLines(this.lines, lines) ||
-          syntaxTree(update.state) !== syntaxTree(update.startState)) {
-        this.decorations = visibleMarkdown(update.view, render, lines);
+      if (update.docChanged || update.viewportChanged ||
+          syntaxTree(update.state) !== syntaxTree(update.startState) ||
+          update.state.field(blockField).ranges !== update.startState.field(blockField).ranges ||
+          update.transactions.some((tx) => tx.effects.some((effect) => effect.is(refreshWidgets)))) {
+        this.rebuild(update.view);
+      } else if (update.selectionSet) {
+        this.layout = layoutInline(this.candidates, update.state.selection, this.layout);
       }
-      this.lines = lines;
     }
-  }, { decorations: (plugin) => plugin.decorations });
+  }, { decorations: (plugin) => plugin.layout.decorations });
 }
 
-function blockWidgets(render) {
+function blockWidgets(render, renderer) {
   function collectBlocks(state, tree) {
     const ranges = [];
     const headings = [];
+    const starts = new Set();
     tree.iterate({
-      enter(node) {
-        if (node.name === "Document") return;
+      enter(ref) {
+        if (ref.name === "Document") return;
+        const node = ref.node;
+        let widget;
         if (node.name === "DisplayMath") {
           const tex = mathText(state.sliceDoc(node.from, node.to), true);
-          if (tex) ranges.push(Decoration.replace({ block: true, widget: new Formula(tex, true, render) }).range(node.from, node.to));
+          if (tex) widget = new Formula(tex, true, render);
         } else if (headingNode.test(node.name)) {
           headings.push(headingLineNumber.range(state.doc.lineAt(node.from).from));
+        } else {
+          const kind = blockKind(state, node);
+          if (kind) {
+            const source = state.sliceDoc(node.from, node.to);
+            const label = kind === "image" ? linkLabel(state, node.firstChild) : "";
+            const tableRows = kind === "table" ? node.getChildren("TableRow").length + 1 : 0;
+            widget = new RenderedMarkdown(source, kind, true, renderer, label, tableRows);
+          }
+        }
+        if (widget) {
+          starts.add(node.from);
+          ranges.push(Decoration.replace({ block: true, widget }).range(node.from, node.to));
         }
         return false;
       },
     });
-    return { tree, widgets: Decoration.set(ranges), headings: RangeSet.of(headings) };
+    return { tree, widgets: Decoration.set(ranges), headings: RangeSet.of(headings), starts };
   }
-  function layout(blocks, lines) {
-    return { ...blocks, lines, ranges: blocks.widgets.update({
-      filter: (from, to) => !intersects(lines, from, to),
-    }) };
+  function layout(blocks, selection, previous) {
+    const open = new Set();
+    for (const range of selection.ranges) {
+      blocks.widgets.between(range.from, range.to, (from) => { open.add(from); });
+    }
+    const openStarts = [...open].sort((a, b) => a - b);
+    if (previous && sameNumbers(openStarts, previous.openStarts)) return previous;
+    const ranges = open.size ? blocks.widgets.update({
+      filterFrom: openStarts[0], filterTo: openStarts.at(-1),
+      filter: (from) => !open.has(from),
+    }) : blocks.widgets;
+    return { ...blocks, openStarts, open, ranges };
   }
   return StateField.define({
     create(state) {
       const tree = syntaxTree(state);
-      return layout(collectBlocks(state, tree), selectedLines(state));
+      return layout(collectBlocks(state, tree), state.selection);
     },
     update(previous, transaction) {
-      const tree = syntaxTree(transaction.state);
-      const lines = transaction.docChanged || transaction.selection ? selectedLines(transaction.state) : previous.lines;
-      if (transaction.docChanged || tree !== previous.tree) {
-        return layout(collectBlocks(transaction.state, tree), lines);
+      const { state } = transaction;
+      const tree = syntaxTree(state);
+      if (transaction.docChanged || tree !== previous.tree ||
+          transaction.effects.some((effect) => effect.is(refreshWidgets))) {
+        return layout(collectBlocks(state, tree), state.selection);
       }
-      return sameLines(previous.lines, lines) ? previous : layout(previous, lines);
+      return transaction.selection ? layout(previous, state.selection, previous) : previous;
     },
     provide: (field) => [
       EditorView.decorations.from(field, (value) => value.ranges),
@@ -260,23 +332,29 @@ function blockWidgets(render) {
   });
 }
 
-const languages = new Map();
+const codeLanguages = [
+  { name: "Rust", alias: ["rs"], load: () => import("@codemirror/lang-rust").then(({ rust }) => rust()) },
+  { name: "JavaScript", alias: ["js", "mjs", "cjs"], load: () => import("@codemirror/lang-javascript").then(({ javascript }) => javascript()) },
+  { name: "TypeScript", alias: ["ts", "mts", "cts"], load: () => import("@codemirror/lang-javascript").then(({ javascript }) => javascript({ typescript: true })) },
+  { name: "Python", alias: ["py", "python3"], load: () => import("@codemirror/lang-python").then(({ python }) => python()) },
+  { name: "C++", alias: ["cpp", "cxx", "cc", "c", "h", "hpp"], load: () => import("@codemirror/lang-cpp").then(({ cpp }) => cpp()) },
+  { name: "Go", alias: ["golang"], load: () => import("@codemirror/lang-go").then(({ go }) => go()) },
+  { name: "Bash", alias: ["sh", "shell", "zsh"], load: () => import("@codemirror/legacy-modes/mode/shell").then(({ shell }) =>
+    new LanguageSupport(StreamLanguage.define(shell))) },
+  { name: "JSON", load: () => import("@codemirror/lang-json").then(({ json }) => json()) },
+  { name: "YAML", alias: ["yml"], load: () => import("@codemirror/lang-yaml").then(({ yaml }) => yaml()) },
+].map((description) => LanguageDescription.of(description));
+
 function loadCode(info) {
-  const name = info.trim().split(/[\s,{]/, 1)[0].toLowerCase();
-  const kind = ["rs", "rust"].includes(name) ? "rust"
-    : ["js", "javascript", "mjs"].includes(name) ? "js"
-      : ["ts", "typescript"].includes(name) ? "ts" : null;
-  if (!kind) return null;
-  if (!languages.has(kind)) {
-    languages.set(kind, (kind === "rust" ? rust() : javascript({ typescript: kind === "ts" })).language);
-  }
-  return languages.get(kind);
+  return LanguageDescription.matchLanguageName(codeLanguages, info.trim().split(/[\s,{]/, 1)[0], false) ?? null;
 }
 
 // CodeMirror renders only the visible lines. Rust keeps the canonical Rope and on-disk state.
-function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNumbers, startLine }) {
+function create(parent, { text, label, renderMath, renderWidgets, hydrateWidgets, onEdit, onCursor, showLineNumbers, startLine }) {
   const readOnly = new Compartment();
   const gutter = new Compartment();
+  const renderer = createWidgetRenderer(renderWidgets, hydrateWidgets);
+  const blockField = blockWidgets(renderMath, renderer);
   let firstLine = startLine;
   let showNumbers = showLineNumbers;
   const gutterExtension = () => showNumbers ? lineNumbers({ formatNumber: (n) => String(n + firstLine) }) : [];
@@ -291,7 +369,7 @@ function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNum
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
         readOnly.of(EditorState.readOnly.of(false)), gutter.of(gutterExtension()),
-        blockWidgets(renderMath), inlinePreview(renderMath),
+        blockField, inlinePreview(renderMath, renderer, blockField),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && update.transactions.some((tx) => tx.annotation(Transaction.addToHistory) !== false)) {
             // Combine multi-cursor transactions into one UTF-16 range on the native Rope.
@@ -350,7 +428,14 @@ function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNum
       if (focus) view.focus();
     },
     focus() { view.focus(); },
-    destroy() { view.destroy(); },
+    invalidateWidgets() {
+      renderer.invalidate();
+      view.dispatch({ effects: refreshWidgets.of(null) });
+    },
+    destroy() {
+      renderer.destroy();
+      view.destroy();
+    },
   };
 }
 

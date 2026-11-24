@@ -15,7 +15,7 @@ A desktop Markdown and LaTeX editor for Windows, macOS, and Linux.
 ## Three editing views
 
 - **Split** shows syntax-highlighted Markdown alongside an updating preview with support for synchronized scrolling, an outline, GFM tables, task lists, and GitHub alerts.
-- **Live Preview** lets you edit directly in CodeMirror 6. The current line keeps its Markdown markers while other lines can display headings, emphasis, task checkboxes, and LaTeX in place.
+- **Live Preview** uses CodeMirror 6 to render images, GFM tables, link labels, GitHub alerts, and LaTeX in place. Moving the cursor onto an element reveals its Markdown while neighboring elements stay rendered. Fenced code highlighting covers Rust, JavaScript, TypeScript, Python, C++, Go, Bash, JSON, and YAML.
 - **Source** gives you a full-width Markdown editor for working on the document structure. The line-number setting applies to all three views.
 
 ![Split view with Markdown source, rendered math and chemistry, and a GitHub alert](docs/screenshots/split.webp)
@@ -55,7 +55,7 @@ Use `⌘` on macOS.
 
 ## Install
 
-Download the Windows, macOS, and Ubuntu packages and their SHA-256 checksums from the [v0.1.0 release](https://github.com/microcrystallization/marktype/releases/tag/v0.1.0).
+Download the Windows, macOS, and Ubuntu packages and their SHA-256 checksums from the [latest release](https://github.com/microcrystallization/marktype/releases/latest).
 
 | Platform | Installation |
 | --- | --- |

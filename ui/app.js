@@ -110,6 +110,23 @@
     activeLine: 0,
   };
   let requestSequence = 0;
+  const liveWidgetRequests = new Map();
+
+  function renderLiveWidgets(docId, fragments) {
+    const request = ++requestSequence;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        liveWidgetRequests.delete(request);
+        resolve([]);
+      }, 5000);
+      liveWidgetRequests.set(request, (html) => {
+        clearTimeout(timer);
+        liveWidgetRequests.delete(request);
+        resolve(html);
+      });
+      send({ cmd: "renderLiveWidgets", docId, request, fragments });
+    });
+  }
 
   // ===== LRU KaTeX Cache (0.005ms cache hit!) =====
   const KATEX_MAX = 4000;
@@ -415,7 +432,10 @@
       state.outline = patch.outline;
       renderOutline();
     }
-    if (patch.refreshPreview) state.previewNeedsRefresh = true;
+    if (patch.refreshPreview) {
+      state.previewNeedsRefresh = true;
+      state.live?.invalidateWidgets();
+    }
     if (state.previewNeedsRefresh) requestPreviewBlocks();
     else if (patch.outlineChanged) updatePreviewToc();
 
@@ -457,13 +477,39 @@
     }
   }
 
-  function mountLiveEditor(focus = false) {
+  let liveBundle;
+  function loadLiveBundle() {
+    if (!liveBundle) liveBundle = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/vendor/codemirror.js";
+      script.onload = resolve;
+      script.onerror = () => {
+        script.remove();
+        liveBundle = null;
+        reject(new Error("Live Preview could not load"));
+      };
+      document.head.append(script);
+    });
+    return liveBundle;
+  }
+
+  function mountLiveEditor(focus = false, restoreSourceCursor = false) {
     if (!state.doc || state.settings?.viewMode !== "live") return;
+    if (!window.MTLiveEditor) {
+      const doc = state.doc;
+      void loadLiveBundle().then(() => {
+        if (state.doc === doc && !state.live) mountLiveEditor(focus, true);
+      }).catch((error) => showToast(error.message));
+      return;
+    }
     if (!state.live) {
+      const docId = state.activeTabId;
       state.live = window.MTLiveEditor.create(elLiveHost, {
         text: state.prevText,
         label: t("editorPlaceholder"),
         renderMath: renderKatexCached,
+        renderWidgets: (fragments) => renderLiveWidgets(docId, fragments),
+        hydrateWidgets: hydrateMath,
         showLineNumbers: state.settings.showLineNumbers,
         startLine: state.windowStartLine,
         onEdit(startChar, endChar, text, lines) {
@@ -478,6 +524,10 @@
           updateActiveBlockHighlight();
         },
       });
+      if (restoreSourceCursor) {
+        const prefix = elSourceEditor.value.slice(0, elSourceEditor.selectionStart).split("\n");
+        state.live.select(prefix.length - 1, Array.from(prefix.at(-1)).length);
+      }
     }
     state.live.configureGutter(state.settings.showLineNumbers, state.windowStartLine);
     state.live.setReadOnly(elSourceEditor.readOnly);
@@ -680,12 +730,8 @@
       }
     }
     if (s.viewMode === "live") {
-      mountLiveEditor();
-      if (modeChanged && state.live) {
-        const selection = elSourceEditor.value.slice(0, elSourceEditor.selectionStart).split("\n");
-        state.live.select(selection.length - 1, Array.from(selection.at(-1)).length,
-          undefined, undefined, editorFocused);
-      }
+      if (!state.doc && !window.MTLiveEditor) void loadLiveBundle().catch((error) => showToast(error.message));
+      mountLiveEditor(modeChanged && editorFocused, modeChanged);
     } else if (modeChanged && state.doc) {
       updateSourceOverlayAndGutter();
       updateCursorStatus(false);
@@ -745,6 +791,7 @@
     if (state.doc && active && state.doc.path !== active.path) {
       state.doc.path = active.path;
       state.previewNeedsRefresh = true;
+      state.live?.invalidateWidgets();
       requestPreviewBlocks();
     }
     renderTabs();
@@ -798,21 +845,82 @@
     elTabBar.appendChild(add);
   }
 
+  const OUTLINE_ROW_HEIGHT = 28;
+  let renderedOutline;
+  let outlineRows = elOutlineList;
+  let outlineFirst = -1;
+  let outlineLast = -1;
+  let outlineFrame = 0;
+
   function renderOutline() {
-    elOutlineList.innerHTML = "";
-    if (!state.outline || state.outline.length === 0) {
-      elOutlineList.innerHTML = `<div class="sidebar-empty">${t("outlineEmpty")}</div>`;
+    const items = state.outline;
+    const virtual = items.length > 300;
+    const scroller = elOutlineList;
+    if (renderedOutline !== items) {
+      const scrollTop = scroller.scrollTop;
+      renderedOutline = items;
+      outlineFirst = outlineLast = -1;
+      scroller.classList.toggle("virtual-outline", virtual);
+      scroller.replaceChildren();
+      outlineRows = scroller;
+      if (virtual) {
+        const track = document.createElement("div");
+        track.className = "outline-track";
+        track.style.height = `${items.length * OUTLINE_ROW_HEIGHT}px`;
+        outlineRows = document.createElement("div");
+        outlineRows.className = "outline-window";
+        track.append(outlineRows);
+        scroller.append(track);
+      }
+      scroller.scrollTop = scrollTop;
+    }
+    if (!items.length) {
+      scroller.innerHTML = `<div class="sidebar-empty">${t("outlineEmpty")}</div>`;
       return;
     }
-    for (const item of state.outline) {
+    const first = virtual ? Math.max(0, Math.floor(scroller.scrollTop / OUTLINE_ROW_HEIGHT) - 8) : 0;
+    const last = virtual ? Math.min(items.length, first + Math.ceil(scroller.clientHeight / OUTLINE_ROW_HEIGHT) + 17) : items.length;
+    if (first === outlineFirst && last === outlineLast) return;
+    outlineFirst = first;
+    outlineLast = last;
+    if (virtual) outlineRows.style.top = `${first * OUTLINE_ROW_HEIGHT}px`;
+    const fragment = document.createDocumentFragment();
+    for (let index = first; index < last; index++) {
+      const item = items[index];
       const btn = document.createElement("button");
       btn.className = `outline-item lvl-${item.level}`;
       btn.textContent = item.text || "(Untitled)";
-      btn.dataset.line = String(item.line);
+      btn.dataset.index = String(index);
       btn.onclick = () => jumpToLine(item.line);
-      elOutlineList.appendChild(btn);
+      fragment.appendChild(btn);
     }
+    outlineRows.replaceChildren(fragment);
+    updateOutlineHighlight();
   }
+
+  function scheduleOutlineWindow() {
+    if (state.outline.length <= 300 || outlineFrame) return;
+    outlineFrame = requestAnimationFrame(() => {
+      outlineFrame = 0;
+      renderOutline();
+    });
+  }
+
+  elOutlineList.style.setProperty("--outline-row-height", `${OUTLINE_ROW_HEIGHT}px`);
+  elOutlineList.addEventListener("scroll", scheduleOutlineWindow);
+  new ResizeObserver(scheduleOutlineWindow).observe(elOutlineList);
+  elOutlineList.addEventListener("keydown", (event) => {
+    const index = Number(event.target.dataset.index);
+    if (!Number.isInteger(index)) return;
+    const next = { ArrowUp: index - 1, ArrowDown: index + 1, Home: 0, End: state.outline.length - 1 }[event.key];
+    if (next === undefined || next < 0 || next >= state.outline.length) return;
+    event.preventDefault();
+    if (next < outlineFirst || next >= outlineLast) {
+      elOutlineList.scrollTop = next * OUTLINE_ROW_HEIGHT;
+      renderOutline();
+    }
+    outlineRows.children[next - outlineFirst]?.focus();
+  });
 
   function renderFileTree() {
     elFileTree.innerHTML = "";
@@ -878,9 +986,10 @@
     state.pendingSourceEdit = false;
     state.pendingEdits = 0;
     state.blockRequest = null;
-    state.previewNeedsRefresh = false;
+    state.previewNeedsRefresh = Boolean(doc?.previewDeferred);
     state.previewStart = 0;
     state.previewTarget = null;
+    elOutlineList.scrollTop = 0;
     elSourceEditor.readOnly = false;
     invalidateSearch();
     if (!doc) {
@@ -971,8 +1080,12 @@
       block?.classList.add("active-block");
       activePreviewBlock = block;
     }
-    const index = indexAtOrBefore(state.outline.length, (i) => state.outline[i].line <= line);
-    const item = elOutlineList.children[index];
+    updateOutlineHighlight();
+  }
+
+  function updateOutlineHighlight() {
+    const index = indexAtOrBefore(state.outline.length, (i) => state.outline[i].line <= state.activeLine);
+    const item = outlineRows.children[index - outlineFirst];
     if (item !== activeOutlineItem) {
       activeOutlineItem?.classList.remove("active");
       item?.classList.add("active");
@@ -1917,6 +2030,10 @@
           endSourceAction();
           invalidateSearch();
         }
+        break;
+
+      case "liveWidgetsRendered":
+        liveWidgetRequests.get(msg.request)?.(msg.html);
         break;
 
       case "blocksLoaded": {

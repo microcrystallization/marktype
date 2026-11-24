@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-11-24
+
+- Render images, GFM tables, link labels, and GitHub alerts directly in Live Preview. Click a widget to reveal its Markdown. Use Ctrl-click or Command-click to follow an external link.
+- Reveal syntax only for the node touched by the cursor or selection. Adjacent inline formulas stay rendered while editing one formula.
+- Highlight fenced Python, C++, Go, Bash, JSON, and YAML alongside Rust, JavaScript, and TypeScript.
+- Load CodeMirror on entry to Live Preview, initialize code parsers when their languages appear, and batch widget requests. Large files use a windowed outline and defer Split preview rendering when opened in Live or Source mode.
+
 ## [0.1.0] - 2026-11-24
 
 - Published packages for Windows x64, macOS on Apple Silicon and Intel, and Ubuntu 24.04 x64. GitHub Actions builds and tests each platform and publishes SHA-256 checksums.

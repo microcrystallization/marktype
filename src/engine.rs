@@ -456,6 +456,18 @@ impl Document {
         })
     }
 
+    pub(crate) fn render_live_fragment(&self, source: &str) -> String {
+        markdown::render_block_with_references(
+            source,
+            &RenderContext {
+                doc_dir: self.path.as_deref().and_then(Path::parent),
+                block_start_line: 0,
+                toc_html: None,
+            },
+            &self.references,
+        )
+    }
+
     pub fn render_range(
         &mut self,
         start_block: usize,

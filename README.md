@@ -15,7 +15,7 @@
 ## 三种编辑视图
 
 - **双页**并排显示带语法高亮的 Markdown 源码和实时预览。支持文档大纲、同步滚动、GFM 表格、任务列表和 GitHub 提示框。
-- **实时预览**在 CodeMirror 6 中直接编辑文档。光标所在行保留 Markdown 标记，其他行可就地显示标题、强调、任务复选框和 LaTeX 公式。
+- **实时预览**在 CodeMirror 6 中直接编辑文档，就地显示图片、GFM 表格、链接文字、GitHub 提示框和 LaTeX 公式。光标触碰某个元素时展开它的 Markdown。同一行的其他元素保持渲染。代码块支持 Rust、JavaScript、TypeScript、Python、C++、Go、Bash、JSON 和 YAML 高亮。
 - **源码**提供全宽 Markdown 编辑器，适合集中修改文档结构。双页、实时预览和源码视图都可以在设置里隐藏行号。
 
 ![双页视图，左侧是 Markdown，右侧显示公式、化学式和 GitHub 提示框](docs/screenshots/split.webp)
@@ -55,7 +55,7 @@ macOS 上使用 `⌘`。
 
 ## 安装
 
-Windows、macOS 和 Ubuntu 的安装包及 SHA-256 校验文件可从 [v0.1.0 Release](https://github.com/microcrystallization/marktype/releases/tag/v0.1.0) 下载。
+Windows、macOS 和 Ubuntu 的安装包及 SHA-256 校验文件可从 [最新 Release](https://github.com/microcrystallization/marktype/releases/latest) 下载。
 
 | 系统 | 安装方式 |
 | --- | --- |
