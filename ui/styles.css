@@ -1084,6 +1084,11 @@ body.focus-mode .mt-block:not(.active-block) { opacity: 0.25; }
   font-size: 0.8em;
   line-height: calc(var(--editor-font-size) * var(--line-height));
 }
+.live-editor-host .cm-formula-line-number {
+  display: flex;
+  justify-content: end;
+  align-items: center;
+}
 .live-editor-host .cm-selectionBackground,
 .live-editor-host .cm-editor.cm-focused .cm-selectionBackground { background: var(--accent-soft); }
 .live-editor-host .cm-line > span { vertical-align: baseline; }

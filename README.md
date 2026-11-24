@@ -1,113 +1,80 @@
 <div align="center">
 
+<img src="assets/icon.svg" width="80" height="80" alt="MarkType 图标">
+
 # MarkType
 
-**A Windows Markdown and LaTeX editor with a live preview, large-file navigation, and adaptive wallpaper themes.**
+面向 Windows、macOS 和 Linux 的 Markdown 与 LaTeX 桌面编辑器。
 
-[![Rust](https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows)](https://github.com)
+**简体中文** · [English](README.en.md) · [Releases](https://github.com/microcrystallization/marktype/releases)
 
 </div>
 
----
+![MarkType 欢迎页，背景为葛饰北斋《神奈川冲浪里》](docs/screenshots/welcome.webp)
 
-![MarkType Split View with Real-time LaTeX and Frosted Wallpaper](docs/screenshots/split.png)
+## 三种编辑视图
 
-## Highlights
+- **双页**并排显示带语法高亮的 Markdown 源码和实时预览。支持文档大纲、同步滚动、GFM 表格、任务列表和 GitHub 提示框。
+- **实时预览**在 CodeMirror 6 中直接编辑文档。光标所在行保留 Markdown 标记，其他行可就地显示标题、强调、任务复选框和 LaTeX 公式。
+- **源码**提供全宽 Markdown 编辑器，适合集中修改文档结构。双页、实时预览和源码视图都可以在设置里隐藏行号。
 
-- **Incremental split preview (Ctrl+\\)**: Edits update a Rope text buffer, reparse the surrounding Markdown blocks, and reuse unchanged preview elements. The source highlighter updates changed lines. Larger documents use a source window and load nearby preview blocks as you navigate.
-- **Typora-Compatible Writing Experience**:
-  - **Three View Modes**: Real-time **Split** (`Ctrl+\`), **Live WYSIWYG** (`Ctrl+/`), and **Source** (`Ctrl+Shift+/`).
-  - **Offline KaTeX + `mhchem`**: Inline `$...$`, display `$$...$$`, `\(...\)`, `\[...\]`, `\begin{align/pmatrix/cases}`, and chemistry `\ce{...}` bundled completely offline with all `.woff2` math fonts.
-  - **Rich Extensions**: YAML Front Matter cards, `[TOC]`, GitHub Callouts (`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`), `==highlight==`, `^sup^`, `~sub~`, GFM tables, footnotes, interactive clickable task checkboxes, local relative image loading, and zero-regex Rust syntax highlighting.
-  - **Productivity**: Outline & File Tree sidebar (`Ctrl+Shift+L`), multi-tab documents, Focus Mode (`F8`), Typewriter Mode (`F9`), bidirectional synchronized scrolling, document-wide regex Find & Replace (`Ctrl+F` / `Ctrl+H`), per-document Auto-Save, HTML export with embedded KaTeX fonts, and full-document Print/PDF (`Ctrl+P`).
-- **Kite-Inspired Wallpaper & Adaptive Theme System (`Ctrl+,`)**:
-  - Includes **7 public-domain classical artworks** from The Metropolitan Museum of Art Open Access (migrated from [Kite](https://github.com/Kfkcome/kite)) plus custom PNG/JPEG/WebP import and history.
-  - **5 cached pixel effects**: `None`, `Scanlines`, `ASCII`, `Halftone`, `Dither`.
-  - **WCAG Contrast Guard**: Automatically computes frosted glass panel opacity (`0.55–0.92`) from the wallpaper's 2nd–98th percentile brightness and tints surfaces/accents toward the dominant colour while preserving WCAG AA text contrast.
-  - **180 ms Cubic-Bezier Crossfade** and a full-bleed sharp Hero Welcome View:
+![双页视图，左侧是 Markdown，右侧显示公式、化学式和 GitHub 提示框](docs/screenshots/split.webp)
 
-![MarkType Empty Hero View](docs/screenshots/hero.png)
+![实时预览，标题、代码和 LaTeX 直接显示在编辑区](docs/screenshots/live.webp)
 
-- **Seamless Frameless Native Window**: Integrated custom titlebar with Windows 11 DWM rounded corners, subtle drop shadow, drag-to-move, double-click maximize, and 8-direction edge resizing.
-- **6 Languages Built-In**: Live switching with zero restart — `简体中文`, `繁體中文`, `English`, `日本語`, `한국어`, `Français`.
+### 更多界面
 
-## Performance checks
+以下实拍均使用 GitHub 浅色主题和《神奈川冲浪里》壁纸。示例文档为 [波浪笔记](examples/markdown-tour.md)。
 
-The Release test suite includes a 50,000-line fixture with 20,000 blocks. The benchmark prints the Rust time for opening and indexing the fixture and applying a single-character edit. WebView layout, scripting, and paint are measured separately from this benchmark.
+| 源码编辑 | 外观与壁纸 | 关于 |
+| --- | --- | --- |
+| [![源码编辑](docs/screenshots/source.webp)](docs/screenshots/source.webp) | [![GitHub 浅色主题和海浪壁纸设置](docs/screenshots/appearance.webp)](docs/screenshots/appearance.webp) | [![关于 MarkType](docs/screenshots/about.webp)](docs/screenshots/about.webp) |
 
-## Keyboard Shortcuts
+## 写作与导出
 
-| Action | Shortcut |
-| :--- | :--- |
-| Split Dual-Pane View | `Ctrl + \` |
-| Typora Live WYSIWYG Mode | `Ctrl + /` |
-| Source Code Mode | `Ctrl + Shift + /` |
-| Toggle Sidebar (Outline / Files) | `Ctrl + Shift + L` |
-| New / Open / Save | `Ctrl + N` / `Ctrl + O` / `Ctrl + S` |
-| Find & Replace | `Ctrl + F` / `Ctrl + H` |
-| Bold / Italic / Link / Inline Code | `Ctrl + B` / `Ctrl + I` / `Ctrl + K` / `` Ctrl + ` `` |
-| Inline / Display LaTeX | `Ctrl + M` / `Ctrl + Shift + M` |
-| Code Block / Table / Headings 1–6 | `Ctrl + Shift + K` / `Ctrl + T` / `Ctrl + 1..6` |
-| Focus Mode / Typewriter Mode | `F8` / `F9` |
-| Settings & Wallpaper | `Ctrl + ,` |
-| Print / Export PDF | `Ctrl + P` |
+- 内置 KaTeX 和 `mhchem`。数学公式、化学式和所需字体均可离线使用。
+- 支持多标签、文件树、文档内查找替换、自动保存、导出 HTML 和通过系统打印对话框保存 PDF。
+- 大文件按窗口载入源码和预览。实时编辑器只绘制视口附近的内容，并把修改范围同步给 Rust 的 Rope 文本缓冲区。
+- 内置七幅公共领域画作，支持导入壁纸和切换深浅主题。
 
-## Installation
+| 操作 | 快捷键 |
+| --- | --- |
+| 双页 / 实时预览 / 源码 | `Ctrl+\` / `Ctrl+/` / `Ctrl+Shift+/` |
+| 新建 / 打开 / 保存 | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` |
+| 查找 / 替换 | `Ctrl+F` / `Ctrl+H` |
+| 设置 / 打印 | `Ctrl+,` / `Ctrl+P` |
 
-### Windows Installer (Recommended)
+macOS 上使用 `⌘`。
 
-Download and run the **`MarkType-Setup-<version>-x64.exe`** installer from a tagged [release](https://github.com/microcrystallization/marktype/releases) or the [Windows packages workflow](https://github.com/microcrystallization/marktype/actions/workflows/release.yml). You can also build it locally via `.\scripts\build-installer.ps1`. The wizard supports 6 languages, per-user or all-users installation, Start Menu & Desktop shortcuts, `.md` / `.markdown` file association, and Explorer right-click `"Open with MarkType"`.
+## 安装
 
-### Build from Source
+已发布的 [v0.1.1](https://github.com/microcrystallization/marktype/releases/tag/v0.1.1) 提供 Windows x64 安装程序和便携 ZIP。包含跨平台工作流的分支可从 [Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) 下载相应运行的构建产物。
 
-### Prerequisites
-- Rust toolchain (Edition 2024, `rustc >= 1.88`)
-- Windows 10/11 with Microsoft Edge WebView2 Runtime (pre-installed on modern Windows)
+| 系统 | 安装方式 |
+| --- | --- |
+| Windows 10/11 x64 | 运行 `MarkType-Setup-<版本>-x64.exe`，或解压便携 ZIP。需要 Microsoft Edge WebView2 Runtime。 |
+| macOS 13.3+ | 按芯片选择 `macos-arm64.dmg` 或 `macos-x64.dmg`，把 MarkType 拖入「应用程序」。构建采用临时签名，未经 Apple 公证。 |
+| Ubuntu 24.04 x64 | 运行 `sudo apt install ./MarkType-<版本>-linux-amd64.deb`。 |
 
-### Build & Run
+## 源码构建与发布
 
-```powershell
-# Run integration tests (including 50,000-line incremental benchmark)
-cargo test --locked --release -- --nocapture
+安装稳定版 Rust 工具链。Ubuntu 24.04 需安装 `libgtk-3-dev libwebkit2gtk-4.1-dev`，macOS 需安装 Xcode 命令行工具。Windows 打包需安装 Inno Setup。
 
-# Build and launch with Cargo's WebView2 loader path
-cargo run --locked --release -- examples/getting-started.md
-
-# Build Windows Setup Installer (.exe) + Portable ZIP (requires Inno Setup 6/7)
-.\scripts\build-installer.ps1
-
-# Launch the binary after packaging copies WebView2Loader.dll
-.\target\release\marktype.exe
-.\target\release\marktype.exe examples\getting-started.md
+```sh
+cargo test --locked --release
+cargo run --locked --release -- examples/markdown-tour.md
 ```
 
-CI runs Rust formatting, Clippy, Release tests, the Windows build, and JavaScript syntax checks on `main` and pull requests. Run **Windows packages** in the Actions tab for an installer, portable ZIP, and SHA-256 checksums. Pushing a version tag such as `v0.1.0` publishes those files to the private repository’s Releases page.
+| 构建产物 | 命令 |
+| --- | --- |
+| Windows 安装程序与便携 ZIP | `.\scripts\build-installer.ps1` |
+| macOS DMG | `bash scripts/build-macos.sh` |
+| Linux DEB | `bash scripts/build-linux.sh` |
 
-Both workflows restore the same Windows Release dependency cache. Successful pushes to `main` populate it for future CI and packaging runs. The cache follows the Rust toolchain and lockfile, and package files are uploaded as artifacts.
+[CI](https://github.com/microcrystallization/marktype/actions/workflows/ci.yml) 运行检查、测试和桌面冒烟测试。[Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) 可手动运行以生成产物。推送与 `Cargo.toml` 中版本一致的新 `v*` 标签，会创建 GitHub Release 并上传安装包和 SHA-256 校验文件。
 
-## Project Structure
+应用内置 CodeMirror 和 KaTeX。修改实时编辑器后，用 Node.js 24 运行 `npm ci`、`npm run build:live`，并提交更新的离线 bundle。
 
-```text
-marktype/
-├── src/
-│   ├── lib.rs                 # Library crate exports
-│   ├── main.rs                # Frameless tao + wry window, DWM chrome & IPC loop
-│   ├── engine.rs              # Rope buffer & incremental block diff engine
-│   ├── markdown.rs            # CommonMark + GFM + LaTeX + Typora renderer
-│   ├── highlight.rs           # Single-pass Rust code syntax highlighter
-│   ├── ipc.rs                 # App state, tabs, file tree, dialogs & IPC router
-│   ├── settings.rs            # Persistent JSON configuration
-│   ├── assets.rs              # Embedded UI, KaTeX, fonts & custom protocol handler
-│   └── wallpaper/             # Kite-inspired wallpaper effects, caching & WCAG tinting
-├── ui/                        # Embedded HTML, CSS, 6-language i18n & JS
-├── assets/                    # Bundled KaTeX, Geist fonts & 7 CC0 artworks
-├── tests/                     # Standalone Rust integration tests & fixtures
-├── examples/                  # Sample Markdown + LaTeX documents
-└── docs/screenshots/          # Application screenshots
-```
+## 许可证
 
-## Credits & License
-
-Licensed under the [MIT License](LICENSE). See [NOTICE.md](NOTICE.md) for third-party attributions including the 7 public-domain Met Open Access artworks migrated from [Kite](https://github.com/Kfkcome/kite), Geist fonts, and KaTeX.
+[MIT](LICENSE)。字体、公式渲染、编辑器和壁纸的来源见 [NOTICE.md](NOTICE.md)。

@@ -1,5 +1,5 @@
 import { Compartment, EditorState, StateField, Transaction } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, drawSelection, keymap, lineNumbers } from "@codemirror/view";
+import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, keymap, lineNumberWidgetMarker, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
@@ -116,6 +116,16 @@ class Formula extends WidgetType {
   }
   get estimatedHeight() { return this.display ? 52 : -1; }
   ignoreEvent() { return false; }
+}
+
+class FormulaLineNumber extends GutterMarker {
+  constructor(number) {
+    super();
+    this.number = number;
+  }
+  elementClass = "cm-formula-line-number";
+  eq(other) { return this.number === other.number; }
+  toDOM(view) { return view.dom.ownerDocument.createTextNode(String(this.number)); }
 }
 
 class Task extends WidgetType {
@@ -268,7 +278,11 @@ function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNum
   const gutter = new Compartment();
   let firstLine = startLine;
   let showNumbers = showLineNumbers;
-  const gutterExtension = () => showNumbers ? lineNumbers({ formatNumber: (n) => String(n + firstLine) }) : [];
+  const gutterExtension = () => showNumbers ? [
+    lineNumbers({ formatNumber: (n) => String(n + firstLine) }),
+    lineNumberWidgetMarker.of((view, widget, block) => widget instanceof Formula
+      ? new FormulaLineNumber(view.state.doc.lineAt(block.from).number + firstLine) : null),
+  ] : [];
   const view = new EditorView({
     parent,
     state: EditorState.create({
