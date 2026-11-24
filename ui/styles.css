@@ -1064,11 +1064,13 @@ body.focus-mode .mt-block:not(.active-block) { opacity: 0.25; }
 
 .live-editor-host .cm-scroller {
   font: inherit;
-  padding-inline: max(12px, calc((100% - var(--preview-max-width) - 100px) / 2));
+  justify-content: center;
+  padding-inline: 12px;
 }
 .live-editor-host .cm-content {
   flex: 1;
   min-width: 0;
+  max-width: calc(var(--preview-max-width) + 24px);
   padding: 24px 12px 42vh;
   caret-color: var(--text);
 }
@@ -1082,10 +1084,9 @@ body.focus-mode .mt-block:not(.active-block) { opacity: 0.25; }
 }
 .live-editor-host .cm-lineNumbers .cm-gutterElement {
   font-size: 0.8em;
-  min-inline-size: calc(var(--live-line-number-width, 3ch) + 8px);
   line-height: calc(var(--editor-font-size) * var(--line-height));
 }
-.live-editor-host :is(.cm-formula-line-number, .cm-heading-line-number) {
+.live-editor-host .cm-heading-line-number {
   display: flex;
   justify-content: end;
   align-items: center;

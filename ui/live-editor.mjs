@@ -1,5 +1,5 @@
 import { Compartment, EditorState, RangeSet, StateField, Transaction } from "@codemirror/state";
-import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, gutterLineClass, keymap, lineNumberWidgetMarker, lineNumbers } from "@codemirror/view";
+import { Decoration, EditorView, GutterMarker, ViewPlugin, WidgetType, drawSelection, gutterLineClass, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
@@ -116,16 +116,6 @@ class Formula extends WidgetType {
   }
   get estimatedHeight() { return this.display ? 52 : -1; }
   ignoreEvent() { return false; }
-}
-
-class FormulaLineNumber extends GutterMarker {
-  constructor(first, last) {
-    super();
-    this.label = first === last ? String(first) : `${first}–${last}`;
-  }
-  elementClass = "cm-formula-line-number";
-  eq(other) { return this.label === other.label; }
-  toDOM(view) { return view.dom.ownerDocument.createTextNode(this.label); }
 }
 
 const headingLineNumber = new class extends GutterMarker {
@@ -289,19 +279,7 @@ function create(parent, { text, label, renderMath, onEdit, onCursor, showLineNum
   const gutter = new Compartment();
   let firstLine = startLine;
   let showNumbers = showLineNumbers;
-  const gutterExtension = () => showNumbers ? [
-    lineNumbers({ formatNumber: (n) => String(n + firstLine) }),
-    lineNumberWidgetMarker.of((view, widget, block) => {
-      if (!(widget instanceof Formula)) return null;
-      const { doc } = view.state;
-      return new FormulaLineNumber(doc.lineAt(block.from).number + firstLine,
-        doc.lineAt(block.to).number + firstLine);
-    }),
-    EditorView.editorAttributes.compute(["doc"], ({ doc }) => {
-      const digits = String(firstLine + doc.lines).length;
-      return { style: `--live-line-number-width: ${digits * 2 + 1}ch` };
-    }),
-  ] : [];
+  const gutterExtension = () => showNumbers ? lineNumbers({ formatNumber: (n) => String(n + firstLine) }) : [];
   const view = new EditorView({
     parent,
     state: EditorState.create({
