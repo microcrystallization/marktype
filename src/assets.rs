@@ -13,6 +13,7 @@ use crate::wallpaper::gallery;
 use crate::wallpaper::store;
 
 const INDEX_HTML: &[u8] = include_bytes!("../ui/index.html");
+const ICON_SVG: &[u8] = include_bytes!("../assets/icon.svg");
 const STYLES_CSS: &[u8] = include_bytes!("../ui/styles.css");
 const SYNTAX_CSS: &[u8] = include_bytes!("../ui/syntax.css");
 const I18N_JS: &[u8] = include_bytes!("../ui/i18n.js");
@@ -210,6 +211,7 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
 
     match path {
         "/" | "/index.html" => (200, "text/html; charset=utf-8", INDEX_HTML.to_vec()),
+        "/icon.svg" => (200, "image/svg+xml", ICON_SVG.to_vec()),
         "/styles.css" => (200, "text/css; charset=utf-8", STYLES_CSS.to_vec()),
         "/syntax.css" => (200, "text/css; charset=utf-8", SYNTAX_CSS.to_vec()),
         "/i18n.js" => (

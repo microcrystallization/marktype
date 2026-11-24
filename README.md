@@ -58,7 +58,7 @@ The Release test suite includes a 50,000-line fixture with 20,000 blocks. The be
 
 ### Windows Installer (Recommended)
 
-Download and run **`MarkType-Setup-0.1.0-x64.exe`** from a tagged [release](https://github.com/microcrystallization/marktype/releases) or the [Windows packages workflow](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) (or build it locally via `.\scripts\build-installer.ps1`). The wizard supports 6 languages, per-user or all-users installation, Start Menu & Desktop shortcuts, `.md` / `.markdown` file association, and Explorer right-click `"Open with MarkType"`.
+Download and run the **`MarkType-Setup-<version>-x64.exe`** installer from a tagged [release](https://github.com/microcrystallization/marktype/releases) or the [Windows packages workflow](https://github.com/microcrystallization/marktype/actions/workflows/release.yml). You can also build it locally via `.\scripts\build-installer.ps1`. The wizard supports 6 languages, per-user or all-users installation, Start Menu & Desktop shortcuts, `.md` / `.markdown` file association, and Explorer right-click `"Open with MarkType"`.
 
 ### Build from Source
 

@@ -1923,6 +1923,11 @@
     if (!msg || !msg.event) return;
     switch (msg.event) {
       case "init":
+        if (msg.version) {
+          const version = $("about-version");
+          version.textContent = "v" + msg.version;
+          version.hidden = false;
+        }
         state.tabs = msg.tabs || [];
         state.activeTabId = msg.activeTabId || null;
         state.fileTree = msg.fileTree || null;

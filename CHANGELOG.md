@@ -2,6 +2,13 @@
 
 All notable changes to **MarkType** will be documented in this file.
 
+## [0.1.1] - 2026-11-24
+
+- Introduced a light MarkType icon and a richer About page with the installed version, feature details, and project links.
+- Fixed missing Windows icons in the installed app, desktop and Start Menu shortcuts, and file associations.
+- Improved syntax highlighting, synchronized scrolling, and typography in the editor and preview.
+- Added an in-app save prompt and corrected autosave, search and replace, and full-document printing.
+
 ## [0.1.0] - 2026-11-23
 
 ### Added

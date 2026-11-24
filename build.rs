@@ -1,56 +1,66 @@
-// Automatically compiles Windows icon/version resource into marktype.exe and copies
-// x64 WebView2Loader.dll next to the built executable on Windows GNU targets.
+// Embed the Windows icon and version on both MSVC and GNU builds.
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=packaging/windows/marktype.rc");
     println!("cargo:rerun-if-changed=assets/icon.ico");
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    let assets_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
+            .join("assets");
+    let major = env!("CARGO_PKG_VERSION_MAJOR");
+    let minor = env!("CARGO_PKG_VERSION_MINOR");
+    let patch = env!("CARGO_PKG_VERSION_PATCH");
+    let version = env!("CARGO_PKG_VERSION");
+    std::fs::write(
+        out_dir.join("marktype-version.h"),
+        format!(
+            "#define MARKTYPE_VERSION_NUMBERS {major},{minor},{patch},0\n\
+             #define MARKTYPE_FILE_VERSION \"{major}.{minor}.{patch}.0\"\n\
+             #define MARKTYPE_VERSION \"{version}\"\n"
+        ),
+    )
+    .expect("Write Windows version resource header");
+    embed_resource::compile_for(
+        "packaging/windows/marktype.rc",
+        ["marktype"],
+        embed_resource::ParamsIncludeDirs([&out_dir, &assets_dir]),
+    )
+    .manifest_required()
+    .expect("Compile MarkType's Windows icon and version resources");
+
     #[cfg(target_os = "windows")]
     {
-        let out_dir = match std::env::var_os("OUT_DIR") {
-            Some(d) => PathBuf::from(d),
-            None => return,
-        };
-
-        // 1. Embed Windows application icon & version metadata into marktype.exe
-        let rc_path = PathBuf::from("packaging/windows/marktype.rc");
-        if rc_path.is_file() {
-            let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-            if target_env == "gnu" {
-                let res_obj = out_dir.join("marktype_res.o");
-                if let Ok(status) = Command::new("windres")
-                    .args([
-                        rc_path.to_str().unwrap_or("packaging/windows/marktype.rc"),
-                        "-O",
-                        "coff",
-                        "-o",
-                        res_obj.to_str().unwrap_or("marktype_res.o"),
-                    ])
-                    .status()
-                    && status.success()
-                {
-                    println!("cargo:rustc-link-arg-bin=marktype={}", res_obj.display());
-                }
-            }
+        // GNU builds use the side-by-side WebView2 loader.
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("gnu") {
+            return;
         }
 
-        // 2. Copy x64 WebView2Loader.dll next to target/<profile>/marktype.exe
-        let Some(profile_dir) = out_dir.ancestors().nth(3) else {
+        let Some(build_dir) = out_dir.ancestors().find(|path| path.ends_with("build")) else {
             return;
         };
-        let build_dir = profile_dir.join("build");
-        if let Ok(entries) = std::fs::read_dir(&build_dir) {
+        let profile_dir = build_dir.parent().expect("Cargo profile directory");
+        let loader_arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+            Ok("x86_64") => "x64",
+            Ok("x86") => "x86",
+            Ok("aarch64") => "arm64",
+            _ => return,
+        };
+        if let Ok(entries) = std::fs::read_dir(build_dir) {
             for entry in entries.flatten() {
-                let p = entry.path();
-                if p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("webview2-com-sys"))
-                    && let Some(found) = find_webview2_dll(&p)
+                if !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("webview2-com-sys")
                 {
-                    let dest = profile_dir.join("WebView2Loader.dll");
-                    let _ = std::fs::copy(found, dest);
+                    continue;
+                }
+                if let Some(loader) = find_webview2_loader(&entry.path(), loader_arch) {
+                    let _ = std::fs::copy(loader, profile_dir.join("WebView2Loader.dll"));
                     break;
                 }
             }
@@ -59,20 +69,20 @@ fn main() {
 }
 
 #[cfg(target_os = "windows")]
-fn find_webview2_dll(dir: &std::path::Path) -> Option<PathBuf> {
-    let direct = dir.join("out").join("x64").join("WebView2Loader.dll");
-    if direct.is_file() {
-        return Some(direct);
+fn find_webview2_loader(dir: &std::path::Path, arch: &str) -> Option<PathBuf> {
+    let loader = dir.join("out").join(arch).join("WebView2Loader.dll");
+    if loader.is_file() {
+        return Some(loader);
     }
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir()
-                && let Some(found) = find_webview2_dll(&p)
-            {
-                return Some(found);
-            }
-        }
-    }
-    None
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| {
+            entry
+                .path()
+                .join("out")
+                .join(arch)
+                .join("WebView2Loader.dll")
+        })
+        .find(|loader| loader.is_file())
 }

@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MarkType</title>
+  <link rel="icon" type="image/svg+xml" href="http://marktype.localhost/icon.svg" />
   <link rel="stylesheet" href="http://marktype.localhost/syntax.css" />
   <link rel="stylesheet" href="http://marktype.localhost/katex/katex.min.css" />
   <link rel="stylesheet" href="http://marktype.localhost/styles.css" />
@@ -30,9 +31,7 @@
     <!-- Seamless Integrated Titlebar / Tabs / Mode Switcher / Window Controls -->
     <header id="topbar" class="topbar">
       <div class="topbar-left">
-        <div class="brand-mark" title="MarkType">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 14.5V5.5L8 10.5L12.5 5.5V14.5"/><path d="M15.5 6.5V14.5M13.5 12L15.5 14.5L17.5 12"/></svg>
-        </div>
+        <img class="brand-mark" src="http://marktype.localhost/icon.svg" alt="MarkType" draggable="false" />
       </div>
 
       <div id="tab-bar" class="tab-bar" role="tablist"></div>
@@ -463,9 +462,38 @@
 
             <!-- About Section -->
             <div id="sec-about" class="settings-section hidden">
-              <div class="settings-card about-card">
-                <h3>MarkType v0.1.0</h3>
-                <p data-i18n="aboutDesc"></p>
+              <header class="settings-card about-hero">
+                <img src="http://marktype.localhost/icon.svg" alt="" width="76" height="76" />
+                <div>
+                  <div class="about-title">
+                    <h2>MarkType</h2>
+                    <span id="about-version" class="about-version" hidden></span>
+                  </div>
+                  <p data-i18n="aboutDesc">A Windows editor for Markdown and LaTeX with a live preview and offline math rendering.</p>
+                </div>
+              </header>
+              <div class="about-details">
+                <h3 class="section-heading" data-i18n="aboutFeatures">Features</h3>
+                <dl class="settings-card about-features">
+                  <div>
+                    <dt data-i18n="aboutWriting">Writing and preview</dt>
+                    <dd data-i18n="aboutWritingDesc">Edit in split, live, or source mode with syntax highlighting and a document outline.</dd>
+                  </div>
+                  <div>
+                    <dt data-i18n="aboutMath">Offline equations</dt>
+                    <dd data-i18n="aboutMathDesc">Render LaTeX equations and chemical formulas locally with KaTeX.</dd>
+                  </div>
+                  <div>
+                    <dt data-i18n="aboutExport">Export and print</dt>
+                    <dd data-i18n="aboutExportDesc">Export HTML or print the full document to PDF.</dd>
+                  </div>
+                </dl>
+                <h3 class="section-heading" data-i18n="aboutProject">Project</h3>
+                <div class="settings-card about-links">
+                  <a href="https://github.com/microcrystallization/marktype/releases" target="_blank" rel="noopener noreferrer" data-i18n="aboutReleases">Release notes</a>
+                  <a href="https://github.com/microcrystallization/marktype/issues" target="_blank" rel="noopener noreferrer" data-i18n="aboutFeedback">Report an issue</a>
+                  <a href="https://github.com/microcrystallization/marktype/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" data-i18n="aboutLicense">MIT license</a>
+                </div>
               </div>
             </div>
           </div>

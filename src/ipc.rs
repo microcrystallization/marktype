@@ -614,6 +614,7 @@ impl AppState {
                 let tree = self.scan_folder_tree();
                 json!({
                     "event": "init",
+                    "version": env!("CARGO_PKG_VERSION"),
                     "settings": self.settings,
                     "tabs": tabs,
                     "activeTabId": self.active_doc().map(|d| d.id.clone()),

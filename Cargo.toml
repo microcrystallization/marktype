@@ -1,6 +1,6 @@
 [package]
 name = "marktype"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Windows Markdown and LaTeX editor with live preview and adaptive wallpaper themes"
@@ -23,6 +23,9 @@ base64 = "0.22"
 unicase = "2"
 open = "5"
 dunce = "1"
+
+[build-dependencies]
+embed-resource = "3"
 
 [profile.release]
 opt-level = 3

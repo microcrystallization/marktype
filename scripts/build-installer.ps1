@@ -16,6 +16,19 @@ $webviewBuild = $messages | Where-Object {
 } | Select-Object -Last 1
 if (-not $exe -or -not $webviewBuild) { throw "Cargo did not report the application and its WebView2 loader." }
 
+# A missing PE icon can otherwise slip through compilation and only show up in Explorer.
+if (-not ('MarkType.Packaging.ShellIcons' -as [type])) {
+    Add-Type -Namespace MarkType.Packaging -Name ShellIcons -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll", EntryPoint = "ExtractIconExW",
+    CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+public static extern uint Count(string path, int index, System.IntPtr large, System.IntPtr small, uint count);
+'@
+}
+$iconCount = [MarkType.Packaging.ShellIcons]::Count($exe, -1, [IntPtr]::Zero, [IntPtr]::Zero, 0)
+if ($iconCount -eq 0 -or $iconCount -eq [uint32]::MaxValue) {
+    throw "The Windows executable has no embedded application icon: $exe"
+}
+
 $loader = Join-Path $webviewBuild.out_dir 'x64\WebView2Loader.dll'
 if (-not (Test-Path -LiteralPath $loader -PathType Leaf)) { throw "WebView2Loader.dll was not found at $loader." }
 $profile = Split-Path -Parent $exe

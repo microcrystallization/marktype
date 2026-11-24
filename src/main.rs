@@ -107,6 +107,22 @@ fn is_editor_url(url: &str) -> bool {
     url == assets::APP_URL || url == "http://marktype.localhost/index.html"
 }
 
+#[cfg(target_os = "windows")]
+fn with_app_icon(builder: WindowBuilder) -> WindowBuilder {
+    use tao::platform::windows::{IconExtWindows, WindowBuilderExtWindows};
+    use tao::window::Icon;
+
+    let icon = Icon::from_resource(1, None).expect("Load the embedded MarkType icon");
+    builder
+        .with_window_icon(Some(icon.clone()))
+        .with_taskbar_icon(Some(icon))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn with_app_icon(builder: WindowBuilder) -> WindowBuilder {
+    builder
+}
+
 fn main() {
     let initial_file = std::env::args_os()
         .nth(1)
@@ -118,7 +134,7 @@ fn main() {
     let proxy_ipc = event_loop.create_proxy();
     let proxy_drop = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
+    let window = with_app_icon(WindowBuilder::new())
         .with_title("MarkType")
         .with_decorations(false)
         .with_inner_size(LogicalSize::new(1420.0, 900.0))

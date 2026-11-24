@@ -3,7 +3,7 @@
 
 #define MyAppName "MarkType"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.1.1"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\..\target\release"
@@ -30,7 +30,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\..\dist
 OutputBaseFilename=MarkType-Setup-{#MyAppVersion}-x64
 SetupIconFile=..\..\assets\icon.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\MarkType.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern dynamic
@@ -69,26 +69,27 @@ Name: "contextmenu"; Description: "{cm:ContextMenu}"; GroupDescription: "{cm:Add
 [Files]
 Source: "{#BuildDir}\marktype.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\assets\icon.ico"; DestDir: "{app}"; DestName: "MarkType.ico"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "languages\LICENSE-InnoSetup.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\examples\getting-started.md"; DestDir: "{app}\examples"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\MarkType.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\MarkType.ico"; Tasks: desktopicon
 
 [Registry]
 ; Associate .md and .markdown files with MarkType
 Root: HKA; Subkey: "Software\Classes\.md\OpenWithProgids"; ValueType: string; ValueName: "MarkType.Markdown"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assocmd
 Root: HKA; Subkey: "Software\Classes\.markdown\OpenWithProgids"; ValueType: string; ValueName: "MarkType.Markdown"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assocmd
 Root: HKA; Subkey: "Software\Classes\MarkType.Markdown"; ValueType: string; ValueName: ""; ValueData: "Markdown Document"; Flags: uninsdeletekey; Tasks: assocmd
-Root: HKA; Subkey: "Software\Classes\MarkType.Markdown\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: assocmd
+Root: HKA; Subkey: "Software\Classes\MarkType.Markdown\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\MarkType.ico"",0"; Tasks: assocmd
 Root: HKA; Subkey: "Software\Classes\MarkType.Markdown\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocmd
 
 ; Explorer right-click "Open with MarkType" for any file
 Root: HKA; Subkey: "Software\Classes\*\shell\OpenWithMarkType"; ValueType: string; ValueName: ""; ValueData: "Open with MarkType"; Flags: uninsdeletekey; Tasks: contextmenu
-Root: HKA; Subkey: "Software\Classes\*\shell\OpenWithMarkType"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"; Tasks: contextmenu
+Root: HKA; Subkey: "Software\Classes\*\shell\OpenWithMarkType"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\MarkType.ico"",0"; Tasks: contextmenu
 Root: HKA; Subkey: "Software\Classes\*\shell\OpenWithMarkType\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: contextmenu
 
 [Run]
