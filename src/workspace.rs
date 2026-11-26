@@ -5,14 +5,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub(crate) fn document_file(path: &Path) -> bool {
+pub fn document_file(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|ext| ext.to_str())
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("md" | "markdown" | "mdown" | "mkd" | "txt" | "tex")
-    )
+        Some("md" | "markdown" | "mdown" | "mkd" | "txt")
+    ) || crate::latex::project_source(path)
 }
 
 pub(crate) fn existing_inside(root: &Path, path: &Path) -> Result<PathBuf, String> {

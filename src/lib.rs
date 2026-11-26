@@ -3,6 +3,7 @@ pub mod engine;
 mod exports;
 pub mod highlight;
 pub mod ipc;
+pub mod latex;
 pub mod markdown;
 pub mod settings;
 mod storage;

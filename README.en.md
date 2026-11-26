@@ -49,6 +49,16 @@ All screenshots use the light GitHub theme and The Great Wave wallpaper. The doc
 - Large files load in source and preview windows. Live Preview draws content near the viewport and sends edit ranges to Rust's Rope text buffer.
 - Seven public-domain artworks, custom wallpapers, and light and dark themes.
 
+## Compile a LaTeX paper
+
+1. Install TeX Live, MacTeX, or MiKTeX with `latexmk`, and put your TeX tools on the application’s `PATH`. Alternatively, install Tectonic. On Windows, `latexmk` may require Perl.
+2. Open a `.tex` file or its project folder. MarkType reads `% !TeX root = ../main.tex` in a chapter. You can also browse for the main file in the compile dialog.
+3. Press `Ctrl+Enter` (`⌘↵` on macOS), select an engine, and choose **Save and compile**. View or copy the build log in the dialog, and open the generated PDF next to the main file when the build succeeds.
+
+The dialog supports pdfLaTeX, XeLaTeX, LuaLaTeX, and Tectonic. Automatic mode follows the main file’s `% !TeX program` directive, then tries `latexmk` with pdfLaTeX, then Tectonic. `latexmk` reruns TeX and invokes BibTeX or Biber as required by the project. Your TeX distribution supplies the packages and fonts. Tectonic may download packages on first use. The compiler resolves inputs and figures from the project directory and writes intermediate files to a temporary directory. Shell escape and project `latexmkrc` files are disabled.
+
+Try the [example paper](examples/latex-paper/main.tex) for sections, cross-references, graphics, and BibTeX. Copy the full `latex-paper` folder to a writable location if it came from the system installation directory.
+
 | Action | Shortcut |
 | --- | --- |
 | Split / Live Preview / Source | `Ctrl+\` / `Ctrl+/` / `Ctrl+Shift+/` |

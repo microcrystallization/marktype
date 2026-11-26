@@ -34,6 +34,16 @@
                 <string>net.daringfireball.markdown</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>LaTeX Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>org.tug.tex</string></array>
+        </dict>
     </array>
     <key>UTImportedTypeDeclarations</key>
     <array>
@@ -48,6 +58,19 @@
                 <array><string>md</string><string>markdown</string><string>mdown</string></array>
                 <key>public.mime-type</key>
                 <string>text/markdown</string>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>org.tug.tex</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>tex</string><string>ltx</string></array>
+                <key>public.mime-type</key>
+                <string>text/x-tex</string>
             </dict>
         </dict>
     </array>

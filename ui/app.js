@@ -64,7 +64,7 @@
           : state.settings.viewMode === "live"
             ? "modeLiveFull"
             : "modeSourceFull";
-      $("st-mode").textContent = t(modeKey);
+      $("st-mode").textContent = t(state.doc?.texSource ? "latexSourceMode" : modeKey);
     }
   }
 
@@ -408,7 +408,7 @@
   }
 
   function requestPreviewBlocks(count = 150) {
-    if (!state.doc || state.blockRequest || state.settings?.viewMode !== "split") return;
+    if (!state.doc || state.doc.texSource || state.blockRequest || state.settings?.viewMode !== "split") return;
     const aroundLine = state.previewTarget;
     const refresh = state.previewNeedsRefresh || aroundLine !== null;
     const end = state.previewStart + state.loadedBlocks;
@@ -468,6 +468,7 @@
       state.editor = window.MTEditor.create(elEditorHost, {
         text: state.prevText,
         mode: state.settings.viewMode,
+        texSource: Boolean(state.doc.texSource),
         label: t("editorPlaceholder"),
         renderMath: renderKatexCached,
         renderWidgets: (fragments) => renderLiveWidgets(docId, fragments),
@@ -480,7 +481,7 @@
         onScroll: syncScrollFrom,
         onEdit(startChar, endChar, text, lines) {
           state.windowEndLine = state.windowStartLine + lines;
-          const deferPreview = state.settings.viewMode !== "split";
+          const deferPreview = state.doc.texSource || state.settings.viewMode !== "split";
           if (deferPreview) state.previewNeedsRefresh = true;
           sendEdit(state.windowStartLine, { startChar, endChar, text }, deferPreview);
         },
@@ -747,11 +748,24 @@
     const active = state.tabs.find((tab) => tab.id === state.activeTabId);
     if (state.doc && active && state.doc.path !== active.path) {
       state.doc.path = active.path;
+      state.doc.texSource = active.texSource;
+      state.editor?.setSourceType(active.texSource);
+      applyTexMode();
       state.previewNeedsRefresh = true;
       state.editor?.invalidateWidgets();
       requestPreviewBlocks();
     }
     renderTabs();
+  }
+
+  function applyTexMode() {
+    const tex = Boolean(state.doc?.texSource);
+    elPanesWrap.classList.toggle("tex-document", tex);
+    $("tex-tools").classList.toggle("hidden", !tex);
+    $("format-bar").classList.toggle("hidden", tex);
+    document.querySelectorAll(".mode-btn").forEach((button) => { button.disabled = tex; });
+    $("btn-print").disabled = !state.doc || tex;
+    if (tex) $("st-mode").textContent = t("latexSourceMode");
   }
 
   function renderTabs() {
@@ -762,6 +776,7 @@
     for (const id of ["btn-save", "btn-save-as", "btn-export", "btn-print", "menu-close-tab", "menu-find", "menu-replace"]) {
       $(id).disabled = !state.activeTabId;
     }
+    if (state.doc?.texSource) $("btn-print").disabled = true;
     elTabBar.innerHTML = "";
     for (const tab of state.tabs) {
       const el = document.createElement("div");
@@ -956,6 +971,7 @@
     unmountEditor();
     state.editorTarget = null;
     state.doc = doc;
+    applyTexMode();
     state.sourceRequest = null;
     state.pendingSourceEdit = false;
     state.pendingEdits = 0;
@@ -1207,6 +1223,7 @@
   }, true);
 
   function applyFormat(fmt) {
+    if (state.doc?.texSource) return;
     const editor = state.editor;
     if (!editor || editor.readOnly) return;
     const { from, to } = editor.selection;
@@ -1453,7 +1470,7 @@
   });
 
   function requestPrint() {
-    if (state.doc) send({ cmd: "print", docId: state.activeTabId });
+    if (state.doc && !state.doc.texSource) send({ cmd: "print", docId: state.activeTabId });
   }
 
   function resolveClose(choice) {
@@ -1501,6 +1518,74 @@
   $("html-export-form").addEventListener("submit", () => send({ cmd: "exportHtml", inlineImages: $("html-inline-images").checked }));
   $("btn-export-docx").onclick = () => send({ cmd: "exportPandoc", format: "docx" });
   $("btn-export-tex").onclick = () => send({ cmd: "exportPandoc", format: "tex" });
+  const latexDialog = $("latex-dialog");
+  const latexMain = $("latex-main");
+  const latexLog = $("latex-log");
+  const latexStatus = $("latex-status");
+  const latexRoots = new Map();
+  let latexContext, latexRequest, latexBuilding = false, latexOutput, latexLastMain;
+
+  function refreshLatexControls() {
+    $("latex-build").disabled = latexBuilding || !latexMain.value;
+    $("latex-choose").disabled = latexBuilding;
+    $("latex-engine").disabled = latexBuilding;
+    $("latex-copy").disabled = !latexLog.textContent;
+    $("latex-open").disabled = latexBuilding || !latexOutput || latexLastMain !== latexMain.value;
+    latexDialog.setAttribute("aria-busy", String(latexBuilding));
+  }
+  function setLatexLog(log) {
+    const follow = latexLog.scrollHeight - latexLog.scrollTop - latexLog.clientHeight < 32;
+    latexLog.textContent = log || "";
+    latexLog.classList.toggle("hidden", !log);
+    if (follow) latexLog.scrollTop = latexLog.scrollHeight;
+  }
+  function openLatexDialog() {
+    if (latexDialog.open) return;
+    if (!latexBuilding) {
+      const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+      const context = active?.path || "";
+      if (latexContext !== context || !latexMain.value) {
+        latexContext = context;
+        latexMain.value = latexRoots.get(context) || "";
+        latexStatus.textContent = t("latexSelect");
+        setLatexLog("");
+        if (!latexMain.value) send({ cmd: "latexProject", request: latexRequest = ++requestSequence });
+      }
+    }
+    refreshLatexControls();
+    latexDialog.showModal();
+  }
+  $("btn-latex").onclick = openLatexDialog;
+  $("btn-tex-tools").onclick = openLatexDialog;
+  $("latex-close").onclick = () => latexDialog.close();
+  $("latex-choose").onclick = () => send({ cmd: "chooseLatexMain", request: latexRequest = ++requestSequence });
+  $("latex-open").onclick = () => send({ cmd: "openLatexPdf" });
+  $("latex-copy").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(latexLog.textContent);
+      latexStatus.textContent = t("latexCopied");
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(latexLog);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      latexLog.focus();
+    }
+  };
+  $("latex-build").onclick = () => {
+    if (state.pendingEdits || state.pendingSourceEdit || state.sourceRequest) {
+      latexStatus.textContent = t("latexSavePending");
+      return;
+    }
+    latexBuilding = true;
+    latexOutput = null;
+    const compiler = $("latex-engine");
+    latexStatus.textContent = t("latexRunning", { compiler: compiler.selectedOptions[0].textContent });
+    setLatexLog("");
+    refreshLatexControls();
+    send({ cmd: "compileLatex", main: latexMain.value, engine: compiler.value });
+  };
   $("btn-print").onclick = requestPrint;
   $("menu-close-tab").onclick = () => {
     if (state.activeTabId) send({ cmd: "closeTab", id: state.activeTabId });
@@ -1859,7 +1944,12 @@
     if (!mod) return;
 
     const k = e.key.toLowerCase();
-    if (state.platform === "macos" && k === "q") { e.preventDefault(); send({ cmd: "windowClose" }); }
+    if (k === "enter") {
+      e.preventDefault();
+      if (latexDialog.open) $("latex-build").click();
+      else openLatexDialog();
+    }
+    else if (state.platform === "macos" && k === "q") { e.preventDefault(); send({ cmd: "windowClose" }); }
     else if (state.platform === "macos" && k === "w") { e.preventDefault(); $("menu-close-tab").click(); }
     else if (k === ",") { e.preventDefault(); state.settingsOpen ? closeSettings() : openSettings(); }
     else if (k === "s") { e.preventDefault(); send({ cmd: "save", saveAs: e.shiftKey }); }
@@ -2117,6 +2207,44 @@
         break;
       }
 
+      case "latexProject":
+        if (msg.request !== latexRequest) break;
+        if (msg.main) {
+          latexMain.value = msg.main;
+          latexRoots.set(latexContext, msg.main);
+          latexStatus.textContent = "";
+          setLatexLog("");
+        }
+        if (msg.error) latexStatus.textContent = msg.error;
+        refreshLatexControls();
+        break;
+
+      case "latexStarted":
+        if (msg.tabs) applyTabSummaries(msg.tabs);
+        latexMain.value = msg.main;
+        latexStatus.textContent = t("latexRunning", { compiler: msg.compiler });
+        break;
+
+      case "latexProgress":
+        setLatexLog(msg.log);
+        refreshLatexControls();
+        break;
+
+      case "latexFinished":
+        if (msg.tabs) applyTabSummaries(msg.tabs);
+        latexBuilding = false;
+        latexLastMain = msg.result?.main;
+        latexOutput = msg.result?.pdf;
+        latexStatus.textContent = msg.error || msg.result?.error || t("latexReady", { path: latexOutput });
+        setLatexLog(msg.result?.log || msg.log);
+        refreshLatexControls();
+        break;
+
+      case "latexCloseWhileBuilding":
+        openLatexDialog();
+        showToast(t("latexBusy"));
+        break;
+
       case "nativeMenu":
         if (msg.id === "quit") send({ cmd: "windowClose" });
         else if (msg.id === "settings") openSettings();
@@ -2126,7 +2254,7 @@
         } else if (msg.id === "undo") state.editor?.undo();
         else if (msg.id === "redo") state.editor?.redo();
         else if (msg.id === "workspace-search") openWorkspaceSearch();
-        else if (["btn-new", "btn-open", "menu-open-folder", "btn-save", "btn-save-as", "btn-print",
+        else if (["btn-new", "btn-open", "menu-open-folder", "btn-save", "btn-save-as", "btn-print", "btn-latex",
           "menu-close-tab", "menu-find", "font-plus", "font-minus", "font-reset"].includes(msg.id)) $(msg.id).click();
         break;
 

@@ -72,7 +72,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth desktop-file-utils
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev xvfb xauth desktop-file-utils
           desktop-file-validate packaging/linux/com.marktype.MarkType.desktop
       - uses: actions/setup-node@v6
         if: runner.os == 'Linux'
@@ -95,6 +95,13 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --all-targets --release -- -D warnings
       - run: cargo test --locked --all-targets --release
+      - name: Compile a multi-file LaTeX project
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends latexmk texlive-latex-recommended texlive-xetex texlive-luatex biber texlive-bibtex-extra poppler-utils
+          for engine in pdf xe lua; do
+            MARKTYPE_TEST_TEX_ENGINE="$engine" cargo test --locked --release --test latex_tests -- --nocapture
+          done
       - run: cargo build --locked --release
       - name: Smoke test native desktop
         timeout-minutes: 2
@@ -106,3 +113,17 @@ jobs:
           else
             target/release/marktype --smoke-test examples/getting-started.md
           fi
+      - name: Smoke test LaTeX compilation from a chapter
+        if: runner.os == 'Linux'
+        timeout-minutes: 2
+        run: |
+          export MARKTYPE_CONFIG_DIR="$RUNNER_TEMP/marktype-latex-smoke"
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          project="$RUNNER_TEMP/Example LaTeX paper"
+          cp -R examples/latex-paper "$project"
+          xvfb-run -a target/release/marktype --smoke-test "$project/sections/introduction.tex"
+          pdftotext -layout "$project/main.pdf" "$project/rendered.txt"
+          grep -F 'Edited in MarkType desktop smoke.' "$project/rendered.txt"
+          grep -F 'Three sample measurements' "$project/rendered.txt"
+          grep -F 'Leslie Lamport' "$project/rendered.txt"
+          grep -F 'Section 2' "$project/rendered.txt"

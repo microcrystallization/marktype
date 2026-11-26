@@ -6,6 +6,7 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { markdown } from "@codemirror/lang-markdown";
 import { GFM } from "@lezer/markdown";
 import { tags } from "@lezer/highlight";
+import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { createWidgetRenderer, enableSourceReveal, RenderedMarkdown } from "./live-widgets.mjs";
 
 const highlight = HighlightStyle.define([
@@ -19,6 +20,7 @@ const highlight = HighlightStyle.define([
   { tag: [tags.typeName, tags.namespace, tags.className], class: "hl-ty" },
   { tag: [tags.function(tags.variableName), tags.definition(tags.variableName)], class: "hl-fn" },
   { tag: tags.macroName, class: "hl-mac" },
+  { tag: [tags.controlKeyword, tags.special(tags.variableName), tags.tagName], class: "hl-key" },
   { tag: [tags.processingInstruction, tags.propertyName, tags.url], class: "hl-key" },
 ]);
 
@@ -371,10 +373,14 @@ const matchesField = StateField.define({
 });
 const matchMark = Decoration.mark({ class: "cm-marktype-match" });
 
-function create(parent, { text, mode, label, renderMath, renderWidgets, hydrateWidgets, onEdit, onCursor, onScroll, showLineNumbers, startLine }) {
+const texLanguage = StreamLanguage.define(stex);
+
+function create(parent, { text, mode, texSource, label, renderMath, renderWidgets, hydrateWidgets, onEdit, onCursor, onScroll, showLineNumbers, startLine }) {
   const readOnly = new Compartment();
   const gutter = new Compartment();
   const visual = new Compartment();
+  const language = new Compartment();
+  const markdownLanguage = markdown({ extensions: [GFM, math], codeLanguages: loadCode });
   const renderer = createWidgetRenderer(renderWidgets, hydrateWidgets);
   const blockField = blockWidgets(renderMath, renderer);
   const visualExtensions = [blockField, inlinePreview(renderMath, renderer, blockField)];
@@ -386,16 +392,16 @@ function create(parent, { text, mode, label, renderMath, renderWidgets, hydrateW
     state: EditorState.create({
       doc: text,
       extensions: [
-        markdown({ extensions: [GFM, math], codeLanguages: loadCode }),
+        language.of(texSource ? texLanguage : markdownLanguage),
         syntaxHighlighting(highlight),
         history(), drawSelection(), closeBrackets(), foldGutter(), matchesField,
         EditorState.allowMultipleSelections.of(true),
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap.filter((binding) => binding.key !== "Mod-/"),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap.filter((binding) => !["Mod-/", "Mod-Enter"].includes(binding.key)),
           ...historyKeymap, ...foldKeymap, indentWithTab]),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
         readOnly.of(EditorState.readOnly.of(false)), gutter.of(gutterExtension()),
-        visual.of(mode === "live" ? visualExtensions : []),
+        visual.of(!texSource && mode === "live" ? visualExtensions : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && update.transactions.some((tx) => !tx.annotation(nativeChange))) {
             // Combine multi-cursor transactions into one UTF-16 range on the native Rope.
@@ -439,7 +445,13 @@ function create(parent, { text, mode, label, renderMath, renderWidgets, hydrateW
     setMode(next) {
       if (mode === next) return;
       mode = next;
-      view.dispatch({ effects: visual.reconfigure(mode === "live" ? visualExtensions : []), scrollIntoView: true });
+      view.dispatch({ effects: visual.reconfigure(!texSource && mode === "live" ? visualExtensions : []), scrollIntoView: true });
+    },
+    setSourceType(next) {
+      if (texSource === next) return;
+      texSource = next;
+      view.dispatch({ effects: [language.reconfigure(texSource ? texLanguage : markdownLanguage),
+        visual.reconfigure(!texSource && mode === "live" ? visualExtensions : [])] });
     },
     applyText(text) {
       if (view.state.doc.toString() === text) return;

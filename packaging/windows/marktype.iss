@@ -3,7 +3,7 @@
 
 #define MyAppName "MarkType"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.2"
+  #define MyAppVersion "0.1.3"
 #endif
 #ifndef BuildDir
   #define BuildDir "..\..\target\release"
@@ -74,6 +74,7 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "languages\LICENSE-InnoSetup.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\examples\getting-started.md"; DestDir: "{app}\examples"; Flags: ignoreversion
+Source: "..\..\examples\latex-paper\*"; DestDir: "{app}\examples\latex-paper"; Excludes: "*.pdf"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\MarkType.ico"
@@ -86,6 +87,10 @@ Root: HKA; Subkey: "Software\Classes\.markdown\OpenWithProgids"; ValueType: stri
 Root: HKA; Subkey: "Software\Classes\MarkType.Markdown"; ValueType: string; ValueName: ""; ValueData: "Markdown Document"; Flags: uninsdeletekey; Tasks: assocmd
 Root: HKA; Subkey: "Software\Classes\MarkType.Markdown\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\MarkType.ico"",0"; Tasks: assocmd
 Root: HKA; Subkey: "Software\Classes\MarkType.Markdown\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocmd
+Root: HKA; Subkey: "Software\Classes\.tex\OpenWithProgids"; ValueType: string; ValueName: "MarkType.LaTeX"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assocmd
+Root: HKA; Subkey: "Software\Classes\MarkType.LaTeX"; ValueType: string; ValueName: ""; ValueData: "LaTeX Document"; Flags: uninsdeletekey; Tasks: assocmd
+Root: HKA; Subkey: "Software\Classes\MarkType.LaTeX\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\MarkType.ico"",0"; Tasks: assocmd
+Root: HKA; Subkey: "Software\Classes\MarkType.LaTeX\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: assocmd
 
 ; Explorer right-click "Open with MarkType" for any file
 Root: HKA; Subkey: "Software\Classes\*\shell\OpenWithMarkType"; ValueType: string; ValueName: ""; ValueData: "Open with MarkType"; Flags: uninsdeletekey; Tasks: contextmenu

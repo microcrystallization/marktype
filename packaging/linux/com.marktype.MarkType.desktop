@@ -7,6 +7,6 @@ Exec=marktype %f
 Icon=com.marktype.MarkType
 Terminal=false
 Categories=Office;TextEditor;
-MimeType=text/markdown;text/x-markdown;
+MimeType=text/markdown;text/x-markdown;text/x-tex;
 StartupWMClass=com.marktype.MarkType
 StartupNotify=true

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::assets;
 use crate::engine::{Document, EditPatch, RenderedBlock, SearchQuery};
 use crate::exports::{self, PandocFormat};
+use crate::latex;
 use crate::settings::{self, Settings, ThemePreset, ViewMode};
 use crate::storage::{self, FileStamp, Fingerprint, Session, SessionTab};
 use crate::wallpaper::fx::Effect;
@@ -26,6 +27,7 @@ pub struct TabSummary {
     pub path: Option<String>,
     pub dirty: bool,
     pub large_mode: bool,
+    pub tex_source: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -208,6 +210,9 @@ impl AppState {
                 path: d.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 dirty: d.dirty,
                 large_mode: d.is_large(),
+                tex_source: latex::project_source(
+                    d.path.as_deref().unwrap_or_else(|| Path::new(&d.title)),
+                ),
             })
             .collect()
     }
@@ -616,9 +621,11 @@ impl AppState {
             return Value::Null;
         };
         let large = doc.is_large();
+        let tex_source =
+            latex::project_source(doc.path.as_deref().unwrap_or_else(|| Path::new(&doc.title)));
         let total_blocks = doc.blocks.len();
         let deferred = large && !split;
-        let block_count = if deferred {
+        let block_count = if deferred || tex_source {
             0
         } else if large {
             max_initial_blocks.min(total_blocks)
@@ -643,6 +650,7 @@ impl AppState {
             "text": text,
             "blocks": blocks,
             "previewDeferred": deferred,
+            "texSource": tex_source,
             "totalBlocks": total_blocks,
             "outline": outline,
             "stats": stats,
@@ -655,6 +663,29 @@ impl AppState {
             return None;
         }
         Some(build_file_tree(root, 0))
+    }
+
+    pub fn save_latex_sources(&mut self, main: &Path) -> Result<(), String> {
+        let directory = main
+            .parent()
+            .ok_or_else(|| "The main file has no project folder".to_owned())?;
+        for index in 0..self.docs.len() {
+            let document = &self.docs[index];
+            if document.dirty
+                && document.path.as_deref().is_some_and(|path| {
+                    path == main
+                        || (latex::project_source(path)
+                            && (path.starts_with(directory)
+                                || latex::detect_root(path, self.folder_root.as_deref())
+                                    .as_deref()
+                                    == Some(main)))
+                })
+            {
+                self.save_document(index, false, true)?;
+                self.schedule_recovery();
+            }
+        }
+        Ok(())
     }
 
     fn workspace_action(
@@ -954,9 +985,10 @@ impl AppState {
             if !allow_dialog {
                 return Ok(None);
             }
-            let mut dialog = rfd::FileDialog::new()
-                .set_file_name(&doc.title)
-                .add_filter("Markdown", &["md", "markdown"]);
+            let mut dialog = rfd::FileDialog::new().set_file_name(&doc.title).add_filter(
+                "Markdown and LaTeX",
+                &["md", "markdown", "tex", "ltx", "bib", "sty", "cls"],
+            );
             if let Some(dir) = doc.path.as_deref().and_then(Path::parent) {
                 dialog = dialog.set_directory(dir);
             }
@@ -1235,7 +1267,18 @@ impl AppState {
 
             IpcCommand::OpenFileDialog => {
                 let picked = rfd::FileDialog::new()
+                    .add_filter(
+                        "Markdown and LaTeX",
+                        &[
+                            "md", "markdown", "mdown", "mkd", "txt", "tex", "ltx", "bib", "sty",
+                            "cls", "bst", "bbl",
+                        ],
+                    )
                     .add_filter("Markdown", &["md", "markdown", "mdown", "mkd", "txt"])
+                    .add_filter(
+                        "LaTeX project files",
+                        &["tex", "ltx", "bib", "sty", "cls", "bst", "bbl"],
+                    )
                     .add_filter("All Files", &["*"])
                     .pick_file();
                 if let Some(path) = picked {

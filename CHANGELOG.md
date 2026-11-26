@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3]
+
+- Compile multi-file LaTeX projects to PDF from the editor. The build dialog detects root directives, supports pdfLaTeX, XeLaTeX, LuaLaTeX and Tectonic, and shows compiler output and errors.
+- Edit `.tex`, bibliography and package files with LaTeX syntax highlighting. LaTeX documents can be opened from the workspace tree or the operating system.
+- Added a multi-file sample paper with cross-references, an external figure and a BibTeX bibliography.
+
 ## [0.1.2] - 2026-11-24
 
 - Paste clipboard images into Markdown. MarkType saves them beside the document in `assets/` and inserts a relative link.

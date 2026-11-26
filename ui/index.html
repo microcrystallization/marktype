@@ -71,6 +71,7 @@
           <button id="btn-export" data-i18n="exportHtml">Export HTML</button>
           <button id="btn-export-docx" data-i18n="exportDocx">Export Word (.docx)</button>
           <button id="btn-export-tex" data-i18n="exportTex">Export LaTeX (.tex)</button>
+          <button id="btn-latex"><span data-i18n="latexCompile">Compile LaTeX</span><kbd>Ctrl+Enter</kbd></button>
           <hr />
           <button id="menu-close-tab" data-i18n="menuCloseTab">Close Tab</button>
           <button id="menu-exit" data-i18n="menuExit">Exit</button>
@@ -231,6 +232,10 @@
           </div>
 
           <!-- Split / Live / Source Panes -->
+          <div id="tex-tools" class="tex-tools hidden">
+            <span>LaTeX</span>
+            <button type="button" id="btn-tex-tools" class="mini-btn accent" data-i18n="latexCompile">Compile LaTeX</button>
+          </div>
           <div id="panes-wrap" class="panes-wrap mode-split">
             <!-- CodeMirror editor shared by all three views -->
             <div id="source-pane" class="source-pane">
@@ -531,6 +536,36 @@
         <button type="submit" class="close-dialog-save" data-i18n="menuSave">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="latex-dialog" class="close-dialog latex-dialog" aria-labelledby="latex-title">
+    <h2 id="latex-title" data-i18n="latexCompile">Compile LaTeX</h2>
+    <div class="latex-options">
+      <div class="latex-main-field">
+        <label for="latex-main" data-i18n="latexMain">Main file</label>
+        <div class="latex-file">
+          <input id="latex-main" class="file-filter" type="text" readonly />
+          <button type="button" class="mini-btn" id="latex-choose" data-i18n="latexChoose">Browse…</button>
+        </div>
+      </div>
+      <label class="latex-engine" for="latex-engine"><span data-i18n="latexEngine">Compiler</span>
+        <select id="latex-engine" class="file-filter">
+          <option value="auto" data-i18n="latexAuto">Automatic</option>
+          <option value="pdf">pdfLaTeX (latexmk)</option>
+          <option value="xe">XeLaTeX (latexmk)</option>
+          <option value="lua">LuaLaTeX (latexmk)</option>
+          <option value="tectonic">Tectonic</option>
+        </select>
+      </label>
+    </div>
+    <p id="latex-status" class="latex-status" role="status"></p>
+    <pre id="latex-log" class="latex-log hidden" tabindex="0" data-i18n-title="latexLog"></pre>
+    <div class="close-dialog-actions latex-actions">
+      <button type="button" id="latex-copy" disabled data-i18n="latexCopy">Copy log</button>
+      <button type="button" id="latex-open" disabled data-i18n="latexOpenPdf">Open PDF</button>
+      <button type="button" id="latex-close" data-i18n="closeCancel">Close</button>
+      <button type="button" id="latex-build" class="close-dialog-save" disabled data-i18n="latexSaveBuild">Save and compile</button>
+    </div>
   </dialog>
 
   <dialog id="external-change-dialog" class="close-dialog" aria-labelledby="external-change-title" aria-describedby="external-change-description">

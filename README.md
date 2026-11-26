@@ -49,6 +49,16 @@
 - 大文件按窗口载入源码和预览。实时编辑器只绘制视口附近的内容，并把修改范围同步给 Rust 的 Rope 文本缓冲区。
 - 内置七幅公共领域画作，支持导入壁纸和切换深浅主题。
 
+## 编译 LaTeX 论文
+
+1. 安装含 `latexmk` 的 TeX Live、MacTeX 或 MiKTeX，并确保 MarkType 能找到所需的编译器。也可以安装 Tectonic。Windows 上的 `latexmk` 可能还需要 Perl。
+2. 在 MarkType 中打开 `.tex` 或工程文件夹。打开章节文件时，MarkType 会识别 `% !TeX root = ../main.tex`，也可以在编译对话框里手动选主文件。
+3. 按 `Ctrl+Enter`（macOS 用 `⌘↵`），选择编译器并点「保存并编译」。可以在对话框查看或复制日志，编译成功后直接打开主文件旁的同名 PDF。
+
+支持 pdfLaTeX、XeLaTeX、LuaLaTeX 和 Tectonic。自动模式识别主文件的 `% !TeX program` 指令，其余情况优先选择 `latexmk` + pdfLaTeX，找不到时使用 Tectonic。`latexmk` 可按工程依赖重复编译并调用 BibTeX 或 Biber，所需宏包和字体由本机 TeX 发行版提供。Tectonic 初次运行可能会下载宏包。编译使用工程目录来解析子文件和图片，临时文件放在独立目录。为避免文档调用外部命令，默认关闭 shell escape 和工程的 `latexmkrc`。
+
+可以用 [示例论文](examples/latex-paper/main.tex) 验证章节、交叉引用、图片和 BibTeX。若示例来自系统安装目录，请先把整个 `latex-paper` 文件夹复制到可写目录。
+
 | 操作 | 快捷键 |
 | --- | --- |
 | 双页 / 实时预览 / 源码 | `Ctrl+\` / `Ctrl+/` / `Ctrl+Shift+/` |

@@ -19,14 +19,43 @@ use wry::{DragDropEvent, NewWindowResponse, WebViewBuilder};
 
 use marktype::assets;
 use marktype::ipc::AppState;
+use marktype::latex;
 use marktype::markdown::is_external_link;
 
 enum UserEvent {
     IpcMessage(String),
     FileDropped(PathBuf),
     WorkspaceResults(serde_json::Value),
+    LatexBuilt(latex::BuildResult),
+    LatexProgress(String),
     #[cfg(target_os = "macos")]
     NativeMenu(String),
+}
+
+#[derive(Default)]
+struct LatexJob {
+    running: bool,
+    pdf: Option<PathBuf>,
+}
+
+impl LatexJob {
+    fn prepare(state: &mut AppState, values: &serde_json::Value) -> Result<latex::Build, String> {
+        let main = values["main"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or("Choose a LaTeX main file first.")?;
+        let engine = serde_json::from_value(values["engine"].clone())
+            .map_err(|_| "Choose a valid LaTeX engine.")?;
+        let main = latex::main_file(&main)?;
+        // Detect the compiler before writing project files. Re-read any engine hint after saving.
+        let build = latex::Build::prepare(main.clone(), engine)?;
+        state.save_latex_sources(&main)?;
+        if engine == latex::Engine::Auto {
+            latex::Build::prepare(main, engine)
+        } else {
+            Ok(build)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -64,6 +93,7 @@ fn install_native_menu(proxy: tao::event_loop::EventLoopProxy<UserEvent>) -> mud
             &item("btn-save", "Save", Code::KeyS, false),
             &item("btn-save-as", "Save As…", Code::KeyS, true),
             &item("btn-print", "Print…", Code::KeyP, false),
+            &MenuItem::with_id("btn-latex", "Compile LaTeX…", true, None),
             &item("menu-close-tab", "Close Tab", Code::KeyW, false),
         ],
     )
@@ -273,6 +303,7 @@ fn main() {
     let proxy_ipc = event_loop.create_proxy();
     let proxy_drop = event_loop.create_proxy();
     let proxy_search = event_loop.create_proxy();
+    let proxy_latex = event_loop.create_proxy();
     let workspace_query = Arc::new(AtomicU64::new(0));
 
     let geometry = state.settings.window_geometry;
@@ -356,6 +387,7 @@ fn main() {
     let webview = build_webview(builder, &window).expect("Initialize the platform WebView");
 
     let mut geometry_at = None;
+    let mut latex_job = LatexJob::default();
     event_loop.run(move |event, _, control_flow| {
         #[cfg(target_os = "macos")]
         let _keep_menu_alive = &native_menu;
@@ -380,6 +412,52 @@ fn main() {
                     && let Some(cmd) = v.get("cmd").and_then(|c| c.as_str())
                 {
                     match cmd {
+                        "latexProject" => {
+                            let main = state.active_doc().and_then(|doc| doc.path.as_deref())
+                                .and_then(|path| latex::detect_root(path, state.folder_root.as_deref()));
+                            dispatch_json(&webview, &serde_json::json!({"event":"latexProject","main":main,"request":v["request"]}));
+                            return;
+                        }
+                        "chooseLatexMain" => {
+                            let mut dialog = rfd::FileDialog::new().add_filter("LaTeX main file", &["tex", "ltx"]);
+                            if let Some(folder) = state.active_doc().and_then(|doc| doc.path.as_deref())
+                                .and_then(std::path::Path::parent).or(state.folder_root.as_deref()) {
+                                dialog = dialog.set_directory(folder);
+                            }
+                            if let Some(path) = dialog.pick_file() {
+                                let response = match latex::main_file(&path) {
+                                    Ok(main) => serde_json::json!({"event":"latexProject","main":main,"request":v["request"]}),
+                                    Err(error) => serde_json::json!({"event":"latexProject","error":error,"request":v["request"]}),
+                                };
+                                dispatch_json(&webview, &response);
+                            }
+                            return;
+                        }
+                        "compileLatex" => {
+                            if latex_job.running { return; }
+                            match LatexJob::prepare(&mut state, &v) {
+                                Ok(build) => {
+                                    latex_job.running = true;
+                                    latex_job.pdf = None;
+                                    dispatch_json(&webview, &serde_json::json!({"event":"latexStarted","main":build.main,
+                                        "compiler":build.compiler(),"tabs":state.tab_summaries()}));
+                                    let proxy = proxy_latex.clone();
+                                    std::thread::spawn(move || {
+                                        let result = build.run(|log| { let _ = proxy.send_event(UserEvent::LatexProgress(log)); });
+                                        let _ = proxy.send_event(UserEvent::LatexBuilt(result));
+                                    });
+                                }
+                                Err(error) => dispatch_json(&webview, &serde_json::json!({"event":"latexFinished","error":error,
+                                    "log":"","tabs":state.tab_summaries()})),
+                            }
+                            return;
+                        }
+                        "openLatexPdf" => {
+                            if let Some(path) = &latex_job.pdf && let Err(error) = open::that_detached(path) {
+                                dispatch_json(&webview, &serde_json::json!({"event":"toast","message":format!("Cannot open PDF: {error}")}));
+                            }
+                            return;
+                        }
                         "workspaceSearch" => {
                             if let Ok(request) = serde_json::from_value::<marktype::workspace::SearchRequest>(v) {
                                 workspace_query.store(request.request, Ordering::Relaxed);
@@ -437,6 +515,10 @@ fn main() {
                             return;
                         }
                         "windowClose" => {
+                            if latex_job.running {
+                                dispatch_json(&webview, &serde_json::json!({"event":"latexCloseWhileBuilding"}));
+                                return;
+                            }
                             remember_window(&window, &mut state);
                             handle_response(&webview, control_flow, &state.request_window_close());
                             return;
@@ -474,15 +556,20 @@ fn main() {
                     dispatch_json(&webview, &response);
                 }
             }
+            Event::UserEvent(UserEvent::LatexBuilt(result)) => {
+                latex_job.running = false;
+                latex_job.pdf.clone_from(&result.pdf);
+                dispatch_json(&webview, &serde_json::json!({"event":"latexFinished","result":result}));
+            }
+            Event::UserEvent(UserEvent::LatexProgress(log)) => {
+                dispatch_json(&webview, &serde_json::json!({"event":"latexProgress","log":log}));
+            }
             Event::UserEvent(UserEvent::FileDropped(path)) => {
                 let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
                     .map(str::to_ascii_lowercase);
-                if matches!(
-                    ext.as_deref(),
-                    Some("md" | "markdown" | "mdown" | "mkd" | "txt" | "tex")
-                ) {
+                if marktype::workspace::document_file(&path) {
                     if state.open_file_path(&path).is_ok() {
                         let doc = state.active_doc_snapshot(200);
                         let payload = serde_json::json!({
@@ -523,6 +610,10 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
+                if latex_job.running {
+                    dispatch_json(&webview, &serde_json::json!({"event":"latexCloseWhileBuilding"}));
+                    return;
+                }
                 remember_window(&window, &mut state);
                 handle_response(&webview, control_flow, &state.request_window_close());
             }

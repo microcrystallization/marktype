@@ -910,7 +910,9 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
 }
 
 .panes-wrap.mode-source .preview-pane,
-.panes-wrap.mode-source .split-divider {
+.panes-wrap.mode-source .split-divider,
+.panes-wrap.tex-document .preview-pane,
+.panes-wrap.tex-document .split-divider {
   display: none;
 }
 
@@ -920,10 +922,28 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
 }
 
 .panes-wrap.mode-source .source-pane,
+.panes-wrap.tex-document .source-pane,
 .panes-wrap.mode-live .source-pane {
   flex: 1 !important;
   width: 100% !important;
 }
+
+.tex-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 5px 14px; border-bottom: 1px solid var(--hairline); color: var(--muted); }
+.tex-document.mode-live .editor-host .cm-scroller { justify-content: start; }
+.tex-document.mode-live .editor-host .cm-content { max-width: none; }
+.latex-dialog.close-dialog { width: min(760px, calc(100vw - 40px)); }
+.latex-options { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, auto); gap: 12px; }
+.latex-options label { display: grid; gap: 4px; }
+.latex-file { display: flex; align-items: center; gap: 6px; }
+.latex-file input { flex: 1; min-width: 0; }
+.latex-file button { flex-shrink: 0; }
+.latex-status { overflow-wrap: anywhere; }
+.latex-log { padding: 10px; max-height: min(42vh, 360px); overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; background: var(--code-bg); border: 1px solid var(--hairline); border-radius: 6px;
+  font: 12px/1.5 var(--font-mono); }
+.latex-actions { flex-wrap: wrap; }
+@media (max-width: 560px) { .latex-options { grid-template-columns: 1fr; } }
 
 /* Left Source Pane */
 .source-pane {

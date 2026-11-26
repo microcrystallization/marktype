@@ -21,6 +21,28 @@
     let error;
     try {
       const preview = document.getElementById("preview-doc");
+      await waitFor("initial document did not arrive over IPC", () => editor && document.getElementById("about-version").textContent);
+      if (document.querySelector(".panes-wrap.tex-document")) {
+        await waitFor("LaTeX command was not highlighted", () => Array.from(document.querySelectorAll(".cm-content [class*='hl-']"))
+          .some((token) => token.textContent.includes("section")));
+        editor.replace(editor.text.length, editor.text.length, "\nEdited in MarkType desktop smoke.\n");
+        const docSaved = () => !document.querySelector(".doc-tab.active .doc-tab-dirty");
+        await waitFor("The edited source was not marked dirty", () => !docSaved());
+        document.querySelector(".cm-content").dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await waitFor("LaTeX project main could not be detected", () =>
+          /[/\\]main\.tex$/i.test(document.getElementById("latex-main").value));
+        document.getElementById("latex-build").click();
+        await waitFor("LaTeX did not produce an openable PDF: " + document.getElementById("latex-status").textContent,
+          () => !document.getElementById("latex-open").disabled ||
+            (!document.getElementById("latex-build").disabled && document.getElementById("latex-log").textContent));
+        if (document.getElementById("latex-open").disabled || !docSaved()) {
+          throw new Error(document.getElementById("latex-status").textContent + "\n" + document.getElementById("latex-log").textContent.slice(-3500));
+        }
+        window.ipc.postMessage(JSON.stringify({ cmd: "smokeResult" }));
+        return;
+      }
       await waitFor("initial document did not arrive over IPC", () =>
         document.getElementById("about-version").textContent !== "" &&
         editor?.text.includes("MarkType") &&
