@@ -107,12 +107,16 @@
       }
     }
 
-    function releaseRaster(slot) {
+    function releaseRaster(slot, keepPageData = false) {
       rasters.delete(slot);
       slot.renderGen++;
       slot.rendering = false;
       slot.renderTask?.cancel();
       slot.renderTask = null;
+      if (!keepPageData) {
+        slot.page?.cleanup();
+        slot.page = null;
+      }
       rasterPixels -= slot.pixels;
       slot.pixels = 0;
       if (slot.canvas) {
@@ -154,6 +158,7 @@
       try {
         const page = await pdfDoc.getPage(slot.pageNum);
         if (docSerial !== loadSerial || laySerial !== layoutSerial || gen !== slot.renderGen) return;
+        slot.page = page;
         let base = pageMeta[slot.pageNum - 1];
         if (!base) {
           base = pageMeta[slot.pageNum - 1] = page.getViewport({ scale: 1 });
@@ -182,7 +187,7 @@
           }
           if (!farthest) break;
           if (Math.abs(slot.pageNum - currentPage) > Math.abs(farthest.pageNum - currentPage)) {
-            rasters.delete(slot);
+            releaseRaster(slot);
             return;
           }
           releaseRaster(farthest);
@@ -224,7 +229,7 @@
       const docSerial = loadSerial;
       const laySerial = ++layoutSerial;
       const previouslyRendered = [...rasters];
-      for (const slot of previouslyRendered) releaseRaster(slot);
+      for (const slot of previouslyRendered) releaseRaster(slot, true);
 
       if (fitMode) {
         scale = computeFitScale(first.width);
@@ -240,7 +245,7 @@
           wrap.className = "pdf-page-wrap";
           wrap.dataset.page = String(pageNum);
           fragment.appendChild(wrap);
-          pageSlots.push({ pageNum, wrap, canvas: null, syncLayer: null,
+          pageSlots.push({ pageNum, wrap, page: null, canvas: null, syncLayer: null,
             pixels: 0, rendering: false, renderTask: null, renderGen: 0 });
         }
         pagesEl.replaceChildren(fragment);
@@ -270,6 +275,7 @@
       if (initialSlot) renderSlot(initialSlot, docSerial, laySerial);
       for (const slot of previouslyRendered) {
         if (isNearViewport(slot)) renderSlot(slot, docSerial, laySerial);
+        else releaseRaster(slot);
       }
       updateToolbar();
     }
@@ -370,7 +376,7 @@
 
     function resetDoc() {
       disconnectObserver();
-      for (const slot of rasters) releaseRaster(slot);
+      for (const slot of rasters) releaseRaster(slot, true);
       clearHighlights();
       clearTimeout(resizeTimer);
       const loading = pendingLoad;
