@@ -57,6 +57,8 @@
     let observer = null;
     let resizeTimer = null;
     let highlightTimer = null;
+    let activeHighlight = null;
+    let lastLayoutWidth = 0;
     let lastInverseAt = 0;
 
     function notify() {
@@ -246,9 +248,15 @@
 
       pageSlots = nextSlots;
       pagesEl.replaceChildren(fragment);
+      lastLayoutWidth = viewportEl.clientWidth;
 
       if (preserveRatio && ratio > 0) {
         viewportEl.scrollTop = Math.round(ratio * viewportEl.scrollHeight);
+      }
+      if (activeHighlight && Date.now() < activeHighlight.expiresAt) {
+        renderHighlightBoxes(activeHighlight.pageNum, activeHighlight.boxes);
+      } else {
+        activeHighlight = null;
       }
 
       observer = new IntersectionObserver(
@@ -291,6 +299,7 @@
 
     function clearHighlights() {
       clearTimeout(highlightTimer);
+      activeHighlight = null;
       for (const slot of pageSlots) {
         slot.syncLayer.replaceChildren();
       }
@@ -347,10 +356,13 @@
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver(() => {
         if (!pdfDoc || !fitMode || viewportEl.clientWidth < 100) return;
+        if (Math.abs(viewportEl.clientWidth - lastLayoutWidth) < 12) return;
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
           if (!pdfDoc || !fitMode || viewportEl.clientWidth < 100) return;
-          if (pageMeta.length && Math.abs(computeFitScale(pageMeta[0].widthPt) - scale) < 0.005) {
+          if (Math.abs(viewportEl.clientWidth - lastLayoutWidth) < 12) return;
+          if (pageMeta.length && Math.abs(computeFitScale(pageMeta[0].widthPt) - scale) < 0.01) {
+            lastLayoutWidth = viewportEl.clientWidth;
             return;
           }
           buildLayout(true);
@@ -481,12 +493,11 @@
       buildLayout(true);
     }
 
-    function highlight(pageNum, boxes) {
-      if (!pdfDoc || !pageSlots.length) return false;
+    function renderHighlightBoxes(pageNum, boxes) {
+      if (!pdfDoc || !pageSlots.length) return null;
       const slot = pageSlots[Math.max(0, Math.min(pageSlots.length - 1, pageNum - 1))];
-      if (!slot) return false;
-      clearHighlights();
-      renderSlot(slot, loadSerial, layoutSerial);
+      if (!slot) return null;
+      for (const s of pageSlots) s.syncLayer.replaceChildren();
 
       const list = Array.isArray(boxes) && boxes.length
         ? boxes
@@ -525,13 +536,24 @@
         el.style.height = `${Math.max(12, height)}px`;
         slot.syncLayer.appendChild(el);
       });
+      return { slot, firstCssTop };
+    }
+
+    function highlight(pageNum, boxes) {
+      clearTimeout(highlightTimer);
+      const rendered = renderHighlightBoxes(pageNum, boxes);
+      if (!rendered) return false;
+      const { slot, firstCssTop } = rendered;
+      renderSlot(slot, loadSerial, layoutSerial);
 
       const targetTop = slot.wrap.offsetTop + firstCssTop - viewportEl.clientHeight * 0.35;
       viewportEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
       currentPage = slot.pageNum;
       updateToolbar();
 
+      activeHighlight = { pageNum, boxes, expiresAt: Date.now() + 2600 };
       highlightTimer = setTimeout(() => {
+        activeHighlight = null;
         for (const s of pageSlots) s.syncLayer.replaceChildren();
       }, 2600);
       return true;
