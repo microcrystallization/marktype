@@ -44,6 +44,8 @@
     let pdfDoc = null;
     let loadSerial = 0;
     let layoutSerial = 0;
+    let currentUrl = null;
+    let loadingUrl = null;
     let currentPath = null;
     let currentTitle = "";
     let hasSyncTex = false;
@@ -365,6 +367,8 @@
       }
       pageMeta = [];
       pageSlots = [];
+      currentUrl = null;
+      loadingUrl = null;
       currentPath = null;
       currentTitle = "";
       hasSyncTex = false;
@@ -373,7 +377,13 @@
     }
 
     async function open(url, meta = {}) {
+      if (url && ((pdfDoc && currentUrl === url) || loadingUrl === url)) {
+        if (meta.hasSyncTex !== undefined) hasSyncTex = Boolean(meta.hasSyncTex);
+        notify();
+        return;
+      }
       const serial = ++loadSerial;
+      loadingUrl = url || null;
       const preserveScroll = Boolean(meta.preserveScroll && currentPath && currentPath === meta.path);
       if (statusEl) {
         statusEl.textContent = meta.loadingText || "";
@@ -397,6 +407,8 @@
           return;
         }
         pdfDoc = nextDoc;
+        loadingUrl = null;
+        currentUrl = url || null;
         pageMeta = [];
         currentPath = meta.path || null;
         currentTitle = meta.title || "";
