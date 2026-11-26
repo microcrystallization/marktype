@@ -12,7 +12,7 @@
   async function waitFor(label, condition) {
     const deadline = Date.now() + 12000;
     while (!condition()) {
-      if (Date.now() >= deadline) throw new Error(label);
+      if (Date.now() >= deadline) throw new Error(typeof label === "function" ? label() : label);
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
   }
@@ -47,8 +47,18 @@
         await waitFor("SyncTeX forward button was not enabled", () =>
           !document.getElementById("btn-tex-sync").disabled);
         document.getElementById("btn-tex-sync").click();
-        await waitFor("Forward SyncTeX did not highlight the PDF (toast: " + document.getElementById("toast").textContent + ")", () =>
-          document.querySelector(".pdf-synctex-box"));
+        await waitFor(
+          () => "Forward SyncTeX did not highlight the PDF (" + JSON.stringify({
+            toast: document.getElementById("toast")?.textContent,
+            pdfStatus: document.getElementById("pdf-status")?.textContent,
+            pages: document.querySelectorAll(".pdf-page-wrap").length,
+            rendered: document.querySelectorAll(".pdf-page-wrap[data-rendered='true']").length,
+            open: document.querySelector(".panes-wrap")?.className,
+            syncDisabled: document.getElementById("btn-tex-sync")?.disabled,
+            pdfSyncDisabled: document.getElementById("pdf-sync-forward")?.disabled,
+          }) + ")",
+          () => document.querySelector(".pdf-synctex-box")
+        );
         window.ipc.postMessage(JSON.stringify({ cmd: "smokeResult" }));
         return;
       }
