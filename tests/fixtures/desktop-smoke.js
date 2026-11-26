@@ -46,16 +46,21 @@
           document.querySelector(".pdf-page-wrap[data-rendered='true'] canvas"));
         await waitFor("SyncTeX forward button was not enabled", () =>
           !document.getElementById("btn-tex-sync").disabled);
+        const events = [];
+        const errors = [];
+        window.addEventListener("error", (ev) => errors.push(String(ev.message || ev.error)));
+        const origRecv = window.__mtReceive;
+        window.__mtReceive = (msg) => {
+          if (msg?.event?.startsWith("synctex") || msg?.event?.startsWith("pdf")) events.push(msg);
+          try { return origRecv(msg); } catch (err) { errors.push(String(err)); throw err; }
+        };
         document.getElementById("btn-tex-sync").click();
         await waitFor(
           () => "Forward SyncTeX did not highlight the PDF (" + JSON.stringify({
             toast: document.getElementById("toast")?.textContent,
-            pdfStatus: document.getElementById("pdf-status")?.textContent,
+            events,
+            errors,
             pages: document.querySelectorAll(".pdf-page-wrap").length,
-            rendered: document.querySelectorAll(".pdf-page-wrap[data-rendered='true']").length,
-            open: document.querySelector(".panes-wrap")?.className,
-            syncDisabled: document.getElementById("btn-tex-sync")?.disabled,
-            pdfSyncDisabled: document.getElementById("pdf-sync-forward")?.disabled,
           }) + ")",
           () => document.querySelector(".pdf-synctex-box")
         );

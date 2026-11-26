@@ -501,16 +501,20 @@
         let width = box.width * slot.scale;
         let height = box.height * slot.scale;
         if (hasVpTransform) {
-          const vb = vp.viewBox;
-          const x1 = vb[0] + box.x;
-          const y1 = vb[3] - (box.y + box.height);
-          const x2 = vb[0] + box.x + box.width;
-          const y2 = vb[3] - box.y;
-          const rect = vp.convertToViewportRectangle([x1, y1, x2, y2]);
-          left = Math.min(rect[0], rect[2]);
-          top = Math.min(rect[1], rect[3]);
-          width = Math.abs(rect[2] - rect[0]);
-          height = Math.abs(rect[3] - rect[1]);
+          try {
+            const vb = vp.viewBox;
+            const x1 = vb[0] + box.x;
+            const y1 = vb[3] - (box.y + box.height);
+            const x2 = vb[0] + box.x + box.width;
+            const y2 = vb[3] - box.y;
+            const rect = vp.convertToViewportRectangle([x1, y1, x2, y2]);
+            if (Array.isArray(rect) && rect.length === 4 && rect.every(Number.isFinite)) {
+              left = Math.min(rect[0], rect[2]);
+              top = Math.min(rect[1], rect[3]);
+              width = Math.abs(rect[2] - rect[0]);
+              height = Math.abs(rect[3] - rect[1]);
+            }
+          } catch {}
         }
         if (idx === 0) firstCssTop = top;
         const el = document.createElement("div");
