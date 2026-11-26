@@ -47,7 +47,7 @@
         await waitFor("SyncTeX forward button was not enabled", () =>
           !document.getElementById("btn-tex-sync").disabled);
         document.getElementById("btn-tex-sync").click();
-        await waitFor("Forward SyncTeX did not highlight the PDF", () =>
+        await waitFor("Forward SyncTeX did not highlight the PDF (toast: " + document.getElementById("toast").textContent + ")", () =>
           document.querySelector(".pdf-synctex-box"));
         window.ipc.postMessage(JSON.stringify({ cmd: "smokeResult" }));
         return;

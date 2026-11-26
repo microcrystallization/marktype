@@ -2449,8 +2449,8 @@
           } else {
             send({ cmd: "openPdfPreview", pdf: latexOutput || undefined, main: latexMain.value || undefined, preserveScroll: true });
           }
-        } else {
-          pdfViewer.highlight(msg.page, msg.boxes);
+        } else if (!pdfViewer.highlight(msg.page, msg.boxes)) {
+          pendingForwardSync = { page: msg.page, boxes: msg.boxes };
         }
         break;
 

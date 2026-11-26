@@ -349,7 +349,11 @@
         if (!pdfDoc || !fitMode || viewportEl.clientWidth < 100) return;
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          if (pdfDoc && fitMode && viewportEl.clientWidth >= 100) buildLayout(true);
+          if (!pdfDoc || !fitMode || viewportEl.clientWidth < 100) return;
+          if (pageMeta.length && Math.abs(computeFitScale(pageMeta[0].widthPt) - scale) < 0.005) {
+            return;
+          }
+          buildLayout(true);
         }, 120);
       });
       resizeObserver.observe(viewportEl);
