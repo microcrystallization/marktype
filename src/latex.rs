@@ -286,12 +286,15 @@ impl Build {
         };
         let output = temp.path();
         let transcript = output.join("marktype-compiler.txt");
-        let result = (|| {
+        let pdf = self.main.with_extension("pdf");
+        let mut previous_pdf = None;
+        let mut result = (|| {
             if self.engine != Engine::Tectonic {
                 prepare_output_directories(self.main.parent().expect("main file parent"), output)?;
             }
             let stdout = File::create(&transcript)?;
             let stderr = stdout.try_clone()?;
+            previous_pdf = backup_pdf(&pdf)?;
             let mut child = self.command(output).stdout(stdout).stderr(stderr).spawn()?;
             let deadline = Instant::now() + Duration::from_secs(600);
             let mut report_at = Instant::now() + Duration::from_secs(1);
@@ -323,17 +326,31 @@ impl Build {
                     "LaTeX compilation failed ({status})."
                 )));
             }
-            let name = self.main.with_extension("pdf");
-            let mut compiled = File::open(output.join(name.file_name().expect("PDF file name")))?;
+            let mut compiled = File::open(output.join(pdf.file_name().expect("PDF file name")))?;
             let mut signature = [0; 5];
             compiled.read_exact(&mut signature)?;
             if &signature != b"%PDF-" {
                 return Err(io::Error::other("The compiler did not produce a PDF."));
             }
             compiled.rewind()?;
-            storage::atomic_write(&name, |file| io::copy(&mut compiled, file).map(|_| ()))?;
-            Ok(name)
+            storage::atomic_write(&pdf, |file| io::copy(&mut compiled, file).map(|_| ()))?;
+            Ok(pdf.clone())
         })();
+        // LuaLaTeX can remove a PDF in the project directory even with an explicit output directory.
+        if let (Err(build_error), Some(backup)) = (&result, previous_pdf)
+            && let Err(restore) = backup.persist_noclobber(&pdf)
+            && restore.error.kind() != io::ErrorKind::AlreadyExists
+        {
+            let backup_path = restore.file.path().to_path_buf();
+            let location = match restore.file.keep() {
+                Ok(_) => format!("Backup saved at {}.", backup_path.display()),
+                Err(error) => format!("Could not keep the backup: {error}."),
+            };
+            result = Err(io::Error::other(format!(
+                "{build_error} Could not restore the previous PDF: {}. {location}",
+                restore.error
+            )));
+        }
         let mut log = tail(&transcript);
         let engine_log = output.join(
             self.main
@@ -347,6 +364,24 @@ impl Build {
         }
         (result, log)
     }
+}
+
+fn backup_pdf(pdf: &Path) -> io::Result<Option<tempfile::NamedTempFile>> {
+    let mut previous = match File::open(pdf) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut backup = tempfile::Builder::new()
+        .prefix(".marktype-pdf-")
+        .tempfile_in(pdf.parent().expect("PDF parent"))?;
+    io::copy(&mut previous, backup.as_file_mut())?;
+    #[cfg(unix)]
+    backup
+        .as_file()
+        .set_permissions(previous.metadata()?.permissions())?;
+    backup.as_file().sync_all()?;
+    Ok(Some(backup))
 }
 
 fn prepare_output_directories(project: &Path, output: &Path) -> io::Result<()> {

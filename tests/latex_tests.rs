@@ -76,7 +76,9 @@ fn compiles_a_paper_and_preserves_the_last_pdf_on_tex_errors() {
         "{}",
         failed.log
     );
-    assert_eq!(fs::read(pdf).unwrap(), bytes);
+    let retained = fs::read(pdf)
+        .unwrap_or_else(|error| panic!("Previous PDF could not be read: {error}\n{}", failed.log));
+    assert_eq!(retained, bytes);
 }
 
 #[test]
