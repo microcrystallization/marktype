@@ -287,6 +287,9 @@ impl Build {
         let output = temp.path();
         let transcript = output.join("marktype-compiler.txt");
         let result = (|| {
+            if self.engine != Engine::Tectonic {
+                prepare_output_directories(self.main.parent().expect("main file parent"), output)?;
+            }
             let stdout = File::create(&transcript)?;
             let stderr = stdout.try_clone()?;
             let mut child = self.command(output).stdout(stdout).stderr(stderr).spawn()?;
@@ -344,6 +347,26 @@ impl Build {
         }
         (result, log)
     }
+}
+
+fn prepare_output_directories(project: &Path, output: &Path) -> io::Result<()> {
+    // TeX Live writes a distinct .aux file for each \include, under its relative path.
+    let staging = dunce::canonicalize(output)?;
+    let walker = ignore::WalkBuilder::new(project)
+        .standard_filters(false)
+        .follow_links(false)
+        .filter_entry(move |entry| entry.file_name() != ".git" && entry.path() != staging)
+        .build();
+    for entry in walker.filter_map(Result::ok) {
+        if entry.depth() != 0 && entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            let relative = entry
+                .path()
+                .strip_prefix(project)
+                .map_err(io::Error::other)?;
+            std::fs::create_dir_all(output.join(relative))?;
+        }
+    }
+    Ok(())
 }
 
 fn tail(path: &Path) -> String {
