@@ -40,6 +40,15 @@
         if (document.getElementById("latex-open").disabled || !docSaved()) {
           throw new Error(document.getElementById("latex-status").textContent + "\n" + document.getElementById("latex-log").textContent.slice(-3500));
         }
+        document.getElementById("latex-open").click();
+        await waitFor("Built-in PDF viewer did not render a PDF page canvas", () =>
+          document.querySelector(".panes-wrap.tex-pdf-open") &&
+          document.querySelector(".pdf-page-wrap[data-rendered='true'] canvas"));
+        await waitFor("SyncTeX forward button was not enabled", () =>
+          !document.getElementById("btn-tex-sync").disabled);
+        document.getElementById("btn-tex-sync").click();
+        await waitFor("Forward SyncTeX did not highlight the PDF", () =>
+          document.querySelector(".pdf-synctex-box"));
         window.ipc.postMessage(JSON.stringify({ cmd: "smokeResult" }));
         return;
       }

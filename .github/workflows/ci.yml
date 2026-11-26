@@ -79,12 +79,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Check offline editor and diagram bundles
+      - name: Check offline editor, diagram and PDF bundles
         if: runner.os == 'Linux'
         run: |
           npm ci
           npm run check:live
           npm run check:diagrams
+          npm run check:pdf
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

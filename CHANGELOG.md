@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4] - 2026-11-26
+
+- Added a built-in offline PDF viewer (powered by bundled PDF.js) side by side with the LaTeX editor, supporting page navigation, zoom, fit-to-width, resizable split layout, and automatic refresh after compilation.
+- Added pure-Rust SyncTeX v1 parsing and bidirectional synchronization: press `Ctrl+Alt+J` (`⌘⌥J` on macOS) or click **Sync to PDF** to highlight the cursor's location in the PDF, and double-click or `Ctrl+Click` (`⌘-Click`) any PDF location to jump back to the exact `.tex` file and line.
+- Enabled SyncTeX generation (`-synctex=1` / `--synctex`) for pdfLaTeX, XeLaTeX, LuaLaTeX, and Tectonic, atomically persisting `.synctex.gz` alongside the compiled PDF.
+
 ## [0.1.3]
 
 - Compile multi-file LaTeX projects to PDF from the editor. The build dialog detects root directives, supports pdfLaTeX, XeLaTeX, LuaLaTeX and Tectonic, and shows compiler output and errors.

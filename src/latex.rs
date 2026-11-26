@@ -235,7 +235,7 @@ impl Build {
         let source = Path::new(".").join(self.main.file_name().expect("main file name"));
         if self.engine == Engine::Tectonic {
             command
-                .args(["--untrusted", "--keep-logs", "--outdir"])
+                .args(["--untrusted", "--keep-logs", "--synctex", "--outdir"])
                 .arg(output)
                 .arg(source);
         } else {
@@ -249,6 +249,7 @@ impl Build {
                     "-halt-on-error",
                     "-file-line-error",
                     "-latexoption=-no-shell-escape",
+                    "-latexoption=-synctex=1",
                 ])
                 .arg(outdir)
                 .arg(source);
@@ -262,10 +263,11 @@ impl Build {
         let main = self.main.clone();
         let (result, log) = self.run_inner(progress);
         match result {
-            Ok(pdf) => BuildResult {
+            Ok((pdf, synctex)) => BuildResult {
                 main,
                 compiler,
                 pdf: Some(pdf),
+                synctex,
                 log,
                 error: None,
             },
@@ -273,13 +275,14 @@ impl Build {
                 main,
                 compiler,
                 pdf: None,
+                synctex: false,
                 log,
                 error: Some(error.to_string()),
             },
         }
     }
 
-    fn run_inner(&self, mut progress: impl FnMut(String)) -> (io::Result<PathBuf>, String) {
+    fn run_inner(&self, mut progress: impl FnMut(String)) -> (io::Result<(PathBuf, bool)>, String) {
         let temp = match tempfile::tempdir() {
             Ok(temp) => temp,
             Err(error) => return (Err(error), String::new()),
@@ -334,7 +337,8 @@ impl Build {
             }
             compiled.rewind()?;
             storage::atomic_write(&pdf, |file| io::copy(&mut compiled, file).map(|_| ()))?;
-            Ok(pdf.clone())
+            let synctex = copy_synctex(output, &self.main)?;
+            Ok((pdf.clone(), synctex))
         })();
         // LuaLaTeX can remove a PDF in the project directory even with an explicit output directory.
         if let (Err(build_error), Some(backup)) = (&result, previous_pdf)
@@ -427,6 +431,23 @@ pub struct BuildResult {
     pub main: PathBuf,
     pub compiler: &'static str,
     pub pdf: Option<PathBuf>,
+    pub synctex: bool,
     pub log: String,
     pub error: Option<String>,
+}
+
+fn copy_synctex(output: &Path, main: &Path) -> io::Result<bool> {
+    for ext in ["synctex.gz", "synctex"] {
+        let target = crate::synctex::with_synctex_extension(main, ext);
+        let Some(file_name) = target.file_name() else {
+            continue;
+        };
+        let produced = output.join(file_name);
+        if produced.is_file() {
+            let mut source = File::open(&produced)?;
+            storage::atomic_write(&target, |file| io::copy(&mut source, file).map(|_| ()))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

@@ -766,6 +766,7 @@
     document.querySelectorAll(".mode-btn").forEach((button) => { button.disabled = tex; });
     $("btn-print").disabled = !state.doc || tex;
     if (tex) $("st-mode").textContent = t("latexSourceMode");
+    syncPdfPaneVisibility();
   }
 
   function renderTabs() {
@@ -1523,14 +1524,76 @@
   const latexLog = $("latex-log");
   const latexStatus = $("latex-status");
   const latexRoots = new Map();
-  let latexContext, latexRequest, latexBuilding = false, latexOutput, latexLastMain;
+  let latexContext, latexRequest, latexBuilding = false, latexOutput, latexLastMain, latexPdfUrl = null, latexHasSyncTex = false;
+
+  const elPdfPane = $("pdf-pane");
+  let pdfPaneOpen = false;
+  let pdfState = { loaded: false, path: null, hasSyncTex: false };
+  let pendingForwardSync = null;
+
+  function syncPdfPaneVisibility() {
+    const show = Boolean(state.doc?.texSource) && pdfPaneOpen;
+    elPanesWrap.classList.toggle("tex-pdf-open", show);
+    elPdfPane.classList.toggle("hidden", !show);
+    $("btn-tex-pdf").classList.toggle("active", show);
+    const canSync = Boolean(state.doc?.texSource) && (pdfState.hasSyncTex || latexHasSyncTex);
+    $("btn-tex-sync").disabled = !canSync;
+    $("pdf-sync-forward").disabled = !pdfState.hasSyncTex;
+  }
+
+  const pdfViewer = window.MTPdfViewer.create({
+    viewportEl: $("pdf-viewport"),
+    pagesEl: $("pdf-pages"),
+    pageInputEl: $("pdf-page-input"),
+    pageTotalEl: $("pdf-page-total"),
+    zoomLabelEl: $("pdf-zoom-label"),
+    statusEl: $("pdf-status"),
+    onInverseSync(info) {
+      send({ cmd: "synctexInverse", pdf: info.path, page: info.page, x: info.x, y: info.y });
+    },
+    onStateChange(next) {
+      pdfState = next;
+      syncPdfPaneVisibility();
+      if (next.loaded && pendingForwardSync) {
+        const target = pendingForwardSync;
+        pendingForwardSync = null;
+        pdfViewer.highlight(target.page, target.boxes);
+      }
+    },
+  });
+
+  function openBuiltInPdf(url, meta) {
+    pdfPaneOpen = true;
+    syncPdfPaneVisibility();
+    pdfViewer.open(url, { ...meta, loadingText: t("pdfLoading") });
+  }
+
+  function closeBuiltInPdf() {
+    pdfPaneOpen = false;
+    syncPdfPaneVisibility();
+  }
+
+  function triggerForwardSync() {
+    if (!state.doc?.texSource) return;
+    const pdf = pdfState.path || latexOutput || undefined;
+    const main = latexMain.value || latexRoots.get(state.doc.path || "") || undefined;
+    send({
+      cmd: "synctexForward",
+      pdf,
+      main,
+      file: state.doc.path || undefined,
+      line: (state.activeLine || 0) + 1,
+    });
+  }
 
   function refreshLatexControls() {
     $("latex-build").disabled = latexBuilding || !latexMain.value;
     $("latex-choose").disabled = latexBuilding;
     $("latex-engine").disabled = latexBuilding;
     $("latex-copy").disabled = !latexLog.textContent;
-    $("latex-open").disabled = latexBuilding || !latexOutput || latexLastMain !== latexMain.value;
+    const canOpen = !latexBuilding && Boolean(latexOutput) && latexLastMain === latexMain.value;
+    $("latex-open").disabled = !canOpen;
+    $("latex-open-external").disabled = !canOpen;
     latexDialog.setAttribute("aria-busy", String(latexBuilding));
   }
   function setLatexLog(log) {
@@ -1557,9 +1620,39 @@
   }
   $("btn-latex").onclick = openLatexDialog;
   $("btn-tex-tools").onclick = openLatexDialog;
+  $("btn-tex-pdf").onclick = () => {
+    if (pdfPaneOpen) {
+      closeBuiltInPdf();
+      return;
+    }
+    const main = latexMain.value || latexRoots.get(state.doc?.path || "") || undefined;
+    send({ cmd: "openPdfPreview", main, pdf: latexOutput || undefined });
+  };
+  $("btn-tex-sync").onclick = triggerForwardSync;
+  $("pdf-prev").onclick = () => pdfViewer.prevPage();
+  $("pdf-next").onclick = () => pdfViewer.nextPage();
+  $("pdf-page-input").addEventListener("change", () => pdfViewer.goToPage($("pdf-page-input").value));
+  $("pdf-zoom-in").onclick = () => pdfViewer.zoomIn();
+  $("pdf-zoom-out").onclick = () => pdfViewer.zoomOut();
+  $("pdf-fit").onclick = () => pdfViewer.fitWidth();
+  $("pdf-sync-forward").onclick = triggerForwardSync;
+  $("pdf-open-external").onclick = () => send({ cmd: "openLatexPdf", path: pdfState.path || latexOutput || undefined });
+  $("pdf-close").onclick = closeBuiltInPdf;
   $("latex-close").onclick = () => latexDialog.close();
   $("latex-choose").onclick = () => send({ cmd: "chooseLatexMain", request: latexRequest = ++requestSequence });
-  $("latex-open").onclick = () => send({ cmd: "openLatexPdf" });
+  $("latex-open").onclick = () => {
+    latexDialog.close();
+    if (latexPdfUrl && latexOutput) {
+      openBuiltInPdf(latexPdfUrl, {
+        path: latexOutput,
+        hasSyncTex: latexHasSyncTex,
+        preserveScroll: true,
+      });
+    } else {
+      send({ cmd: "openPdfPreview", pdf: latexOutput || undefined, main: latexMain.value || undefined });
+    }
+  };
+  $("latex-open-external").onclick = () => send({ cmd: "openLatexPdf", path: latexOutput || undefined });
   $("latex-copy").onclick = async () => {
     try {
       await navigator.clipboard.writeText(latexLog.textContent);
@@ -1949,6 +2042,10 @@
       if (latexDialog.open) $("latex-build").click();
       else openLatexDialog();
     }
+    else if (e.altKey && k === "j" && state.doc?.texSource) {
+      e.preventDefault();
+      triggerForwardSync();
+    }
     else if (state.platform === "macos" && k === "q") { e.preventDefault(); send({ cmd: "windowClose" }); }
     else if (state.platform === "macos" && k === "w") { e.preventDefault(); $("menu-close-tab").click(); }
     else if (k === ",") { e.preventDefault(); state.settingsOpen ? closeSettings() : openSettings(); }
@@ -2235,9 +2332,63 @@
         latexBuilding = false;
         latexLastMain = msg.result?.main;
         latexOutput = msg.result?.pdf;
+        latexPdfUrl = msg.pdfUrl || null;
+        latexHasSyncTex = Boolean(msg.hasSyncTex);
         latexStatus.textContent = msg.error || msg.result?.error || t("latexReady", { path: latexOutput });
         setLatexLog(msg.result?.log || msg.log);
         refreshLatexControls();
+        if (latexPdfUrl && latexOutput && state.doc?.texSource) {
+          openBuiltInPdf(latexPdfUrl, {
+            path: latexOutput,
+            hasSyncTex: latexHasSyncTex,
+            preserveScroll: true,
+          });
+        } else {
+          syncPdfPaneVisibility();
+        }
+        break;
+
+      case "pdfLoaded":
+        latexOutput = msg.path;
+        latexPdfUrl = msg.url;
+        latexHasSyncTex = Boolean(msg.hasSyncTex);
+        openBuiltInPdf(msg.url, {
+          path: msg.path,
+          title: msg.title,
+          hasSyncTex: latexHasSyncTex,
+          preserveScroll: Boolean(msg.preserveScroll),
+        });
+        break;
+
+      case "pdfError":
+        showToast(msg.message || "Cannot open PDF");
+        break;
+
+      case "synctexForwardResult":
+        if (msg.error) {
+          showToast(msg.error);
+        } else if (!pdfPaneOpen || !pdfState.loaded) {
+          pendingForwardSync = { page: msg.page, boxes: msg.boxes };
+          if (latexPdfUrl && latexOutput) {
+            openBuiltInPdf(latexPdfUrl, {
+              path: latexOutput,
+              hasSyncTex: true,
+              preserveScroll: true,
+            });
+          } else {
+            send({ cmd: "openPdfPreview", pdf: latexOutput || undefined, main: latexMain.value || undefined, preserveScroll: true });
+          }
+        } else {
+          pdfViewer.highlight(msg.page, msg.boxes);
+        }
+        break;
+
+      case "synctexInverseResult":
+        if (msg.error) {
+          showToast(msg.error);
+        } else if (msg.line) {
+          jumpToLine(Math.max(0, Number(msg.line) - 1));
+        }
         break;
 
       case "latexCloseWhileBuilding":

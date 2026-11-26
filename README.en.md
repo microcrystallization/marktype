@@ -53,7 +53,8 @@ All screenshots use the light GitHub theme and The Great Wave wallpaper. The doc
 
 1. Install TeX Live, MacTeX, or MiKTeX with `latexmk`, and put your TeX tools on the application’s `PATH`. Alternatively, install Tectonic. On Windows, `latexmk` may require Perl.
 2. Open a `.tex` file or its project folder. MarkType reads `% !TeX root = ../main.tex` in a chapter. You can also browse for the main file in the compile dialog.
-3. Press `Ctrl+Enter` (`⌘↵` on macOS), select an engine, and choose **Save and compile**. View or copy the build log in the dialog, and open the generated PDF next to the main file when the build succeeds.
+3. Press `Ctrl+Enter` (`⌘↵` on macOS), select an engine, and choose **Save and compile**. View or copy the build log in the dialog. When the build succeeds, the generated PDF opens or refreshes in the built-in side-by-side PDF viewer (and can also be opened in your system PDF viewer).
+4. **Bidirectional SyncTeX**: Compilation generates `.synctex.gz` alongside the PDF. Press `Ctrl+Alt+J` (`⌘⌥J` on macOS) or click **Sync to PDF** to highlight the cursor's location in the PDF. Double-click or `Ctrl+Click` (`⌘-Click` on macOS) anywhere in the PDF to jump back to the matching `.tex` file and line.
 
 The dialog supports pdfLaTeX, XeLaTeX, LuaLaTeX, and Tectonic. Automatic mode follows the main file’s `% !TeX program` directive, then tries `latexmk` with pdfLaTeX, then Tectonic. `latexmk` reruns TeX and invokes BibTeX or Biber as required by the project. Your TeX distribution supplies the packages and fonts. Tectonic may download packages on first use. The compiler resolves inputs and figures from the project directory and writes intermediate files to a temporary directory. Shell escape and project `latexmkrc` files are disabled.
 
@@ -95,7 +96,7 @@ cargo run --locked --release -- examples/markdown-tour.md
 
 [CI](https://github.com/microcrystallization/marktype/actions/workflows/ci.yml) runs checks, tests, and desktop smoke tests. Run [Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) manually for build artifacts. Pushing a new `v*` tag that matches the version in `Cargo.toml` creates a GitHub Release with packages and a SHA-256 checksum file.
 
-The application embeds CodeMirror, KaTeX, and Mermaid. Use Node.js 24 to run `npm ci`, then `npm run build:live` and `npm run build:diagrams` to update the offline bundles.
+The application embeds CodeMirror, KaTeX, Mermaid, and PDF.js. Use Node.js 24 to run `npm ci`, then `npm run build:live`, `npm run build:diagrams`, and `npm run build:pdf` to update the offline bundles.
 
 On a Mac configured with an Apple Developer ID and `notarytool` credentials, pass `MARKTYPE_MACOS_IDENTITY` and `MARKTYPE_NOTARY_PROFILE` to `scripts/build-macos.sh` to sign, notarize, and staple the DMG.
 

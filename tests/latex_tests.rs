@@ -62,6 +62,24 @@ fn compiles_a_paper_and_preserves_the_last_pdf_on_tex_errors() {
     assert!(bytes.starts_with(b"%PDF-"));
     assert!(bytes.len() > 4_000);
     assert!(!main.with_extension("aux").exists());
+    assert!(result.synctex, "SyncTeX should be generated during build");
+    let synctex = marktype::synctex::SyncTex::load_for_pdf(&pdf).unwrap();
+    let intro = directory.join("sections/introduction.tex");
+    let forward = synctex.forward(&intro, 3).unwrap();
+    assert_eq!(forward.page, 1);
+    assert!(!forward.boxes.is_empty());
+    let first_box = &forward.boxes[0];
+    let inverse = synctex
+        .inverse(
+            forward.page,
+            first_box.x + first_box.width * 0.5,
+            first_box.y + first_box.height * 0.5,
+        )
+        .unwrap();
+    assert_eq!(
+        dunce::canonicalize(&inverse.path).unwrap(),
+        dunce::canonicalize(&intro).unwrap()
+    );
 
     fs::write(
         directory.join("sections/results.tex"),

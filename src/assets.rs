@@ -20,6 +20,9 @@ const I18N_JS: &[u8] = include_bytes!("../ui/i18n.js");
 const APP_JS: &[u8] = include_bytes!("../ui/app.js");
 const CODEMIRROR_JS: &[u8] = include_bytes!("../ui/vendor/codemirror.js");
 const MERMAID_JS: &[u8] = include_bytes!("../ui/vendor/mermaid.js");
+const PDF_JS: &[u8] = include_bytes!("../ui/vendor/pdf.js");
+const PDF_WORKER_MJS: &[u8] = include_bytes!("../ui/vendor/pdf.worker.mjs");
+const PDF_VIEWER_JS: &[u8] = include_bytes!("../ui/pdf-viewer.js");
 const DIAGRAMS_JS: &[u8] = include_bytes!("../ui/diagrams.js");
 
 const KATEX_JS: &[u8] = include_bytes!("../assets/katex/katex.min.js");
@@ -29,7 +32,7 @@ const MHCHEM_JS: &[u8] = include_bytes!("../assets/katex/mhchem.min.js");
 pub const APP_URL: &str = "http://marktype.localhost/";
 #[cfg(not(target_os = "windows"))]
 pub const APP_URL: &str = "marktype://localhost/";
-pub const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https: http:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
+pub const APP_CSP: &str = "default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https: http:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 
 #[derive(Default)]
 struct LocalImages {
@@ -38,8 +41,57 @@ struct LocalImages {
     picked: std::collections::HashMap<PathBuf, PathBuf>,
 }
 
+#[derive(Default)]
+struct LocalPdfs {
+    paths: Vec<PathBuf>,
+    by_path: std::collections::HashMap<PathBuf, usize>,
+    revision: u64,
+}
+
 static LOCAL_IMAGES: LazyLock<Mutex<LocalImages>> = LazyLock::new(Mutex::default);
+static LOCAL_PDFS: LazyLock<Mutex<LocalPdfs>> = LazyLock::new(Mutex::default);
 const MAX_LOCAL_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_LOCAL_PDF_BYTES: u64 = 256 * 1024 * 1024;
+
+pub fn register_pdf(path: &Path) -> Option<String> {
+    let canonical = dunce::canonicalize(path).ok()?;
+    let is_pdf = canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"));
+    if !canonical.is_file() || !is_pdf {
+        return None;
+    }
+    let mut pdfs = LOCAL_PDFS.lock().ok()?;
+    let id = if let Some(&id) = pdfs.by_path.get(&canonical) {
+        id
+    } else {
+        let id = pdfs.paths.len();
+        pdfs.paths.push(canonical.clone());
+        pdfs.by_path.insert(canonical, id);
+        id
+    };
+    pdfs.revision += 1;
+    Some(format!("/local-pdf/{id}?v={}", pdfs.revision))
+}
+
+fn local_pdf(id: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let path = LOCAL_PDFS.lock().ok()?.paths.get(id)?.clone();
+    if dunce::canonicalize(&path).ok()? != path {
+        return None;
+    }
+    let file = std::fs::File::open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_LOCAL_PDF_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_LOCAL_PDF_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_LOCAL_PDF_BYTES && bytes.starts_with(b"%PDF-")).then_some(bytes)
+}
 
 pub(crate) fn save_clipboard_image(directory: &Path, encoded: &str) -> Result<String, String> {
     use std::io::Write;
@@ -283,6 +335,21 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             "application/javascript; charset=utf-8",
             MERMAID_JS.to_vec(),
         ),
+        "/vendor/pdf.js" => (
+            200,
+            "application/javascript; charset=utf-8",
+            PDF_JS.to_vec(),
+        ),
+        "/vendor/pdf.worker.mjs" => (
+            200,
+            "application/javascript; charset=utf-8",
+            PDF_WORKER_MJS.to_vec(),
+        ),
+        "/pdf-viewer.js" => (
+            200,
+            "application/javascript; charset=utf-8",
+            PDF_VIEWER_JS.to_vec(),
+        ),
         "/diagrams.js" => (
             200,
             "application/javascript; charset=utf-8",
@@ -359,6 +426,12 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             .and_then(local_image)
             .map(|(mime, bytes)| (200, mime, bytes))
             .unwrap_or_else(|| (404, "text/plain", b"Local image not found".to_vec())),
+        _ if path.starts_with("/local-pdf/") => path["/local-pdf/".len()..]
+            .parse::<usize>()
+            .ok()
+            .and_then(local_pdf)
+            .map(|bytes| (200, "application/pdf", bytes))
+            .unwrap_or_else(|| (404, "text/plain", b"Local PDF not found".to_vec())),
         _ => (404, "text/plain", b"Not found".to_vec()),
     }
 }

@@ -53,7 +53,8 @@
 
 1. 安装含 `latexmk` 的 TeX Live、MacTeX 或 MiKTeX，并确保 MarkType 能找到所需的编译器。也可以安装 Tectonic。Windows 上的 `latexmk` 可能还需要 Perl。
 2. 在 MarkType 中打开 `.tex` 或工程文件夹。打开章节文件时，MarkType 会识别 `% !TeX root = ../main.tex`，也可以在编译对话框里手动选主文件。
-3. 按 `Ctrl+Enter`（macOS 用 `⌘↵`），选择编译器并点「保存并编译」。可以在对话框查看或复制日志，编译成功后直接打开主文件旁的同名 PDF。
+3. 按 `Ctrl+Enter`（macOS 用 `⌘↵`），选择编译器并点「保存并编译」。可以在对话框查看或复制日志，编译成功后会在编辑器右侧的内置 PDF 阅读器中自动打开或刷新主文件旁的同名 PDF（也支持通过系统默认应用外部打开）。
+4. **SyncTeX 双向定位**：编译自动生成 `.synctex.gz`。按 `Ctrl+Alt+J`（macOS 用 `⌘⌥J`）或点击「定位到 PDF」从源码光标高亮定位到 PDF 对应区域；在内置 PDF 页面上双击或 `Ctrl+点击`（macOS 用 `⌘+点击`）即可反向跳转并打开对应的 `.tex` 章节文件与行号。
 
 支持 pdfLaTeX、XeLaTeX、LuaLaTeX 和 Tectonic。自动模式识别主文件的 `% !TeX program` 指令，其余情况优先选择 `latexmk` + pdfLaTeX，找不到时使用 Tectonic。`latexmk` 可按工程依赖重复编译并调用 BibTeX 或 Biber，所需宏包和字体由本机 TeX 发行版提供。Tectonic 初次运行可能会下载宏包。编译使用工程目录来解析子文件和图片，临时文件放在独立目录。为避免文档调用外部命令，默认关闭 shell escape 和工程的 `latexmkrc`。
 
@@ -95,7 +96,7 @@ cargo run --locked --release -- examples/markdown-tour.md
 
 [CI](https://github.com/microcrystallization/marktype/actions/workflows/ci.yml) 运行检查、测试和桌面冒烟测试。[Desktop packages](https://github.com/microcrystallization/marktype/actions/workflows/release.yml) 可手动运行以生成产物。推送与 `Cargo.toml` 中版本一致的新 `v*` 标签，会创建 GitHub Release 并上传安装包和 SHA-256 校验文件。
 
-应用内置 CodeMirror、KaTeX 和 Mermaid。用 Node.js 24 运行 `npm ci`，通过 `npm run build:live` 和 `npm run build:diagrams` 更新相应的离线资源。
+应用内置 CodeMirror、KaTeX、Mermaid 和 PDF.js。用 Node.js 24 运行 `npm ci`，通过 `npm run build:live`、`npm run build:diagrams` 和 `npm run build:pdf` 更新相应的离线资源。
 
 在配置了 Apple Developer ID 和 `notarytool` 认证的 Mac 上，可以给 `scripts/build-macos.sh` 传入 `MARKTYPE_MACOS_IDENTITY` 和 `MARKTYPE_NOTARY_PROFILE`，生成已签名并附带公证票据的 DMG。
 

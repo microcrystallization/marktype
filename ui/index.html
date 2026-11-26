@@ -234,7 +234,11 @@
           <!-- Split / Live / Source Panes -->
           <div id="tex-tools" class="tex-tools hidden">
             <span>LaTeX</span>
-            <button type="button" id="btn-tex-tools" class="mini-btn accent" data-i18n="latexCompile">Compile LaTeX</button>
+            <div class="tex-tools-actions">
+              <button type="button" id="btn-tex-sync" class="mini-btn" disabled data-i18n="synctexForward" data-i18n-title="synctexForwardTitle">Sync to PDF</button>
+              <button type="button" id="btn-tex-pdf" class="mini-btn" data-i18n="pdfPreviewBtn">PDF Preview</button>
+              <button type="button" id="btn-tex-tools" class="mini-btn accent" data-i18n="latexCompile">Compile LaTeX</button>
+            </div>
           </div>
           <div id="panes-wrap" class="panes-wrap mode-split">
             <!-- CodeMirror editor shared by all three views -->
@@ -249,6 +253,32 @@
               <article id="preview-doc" class="preview-doc"></article>
               <div id="load-more-wrap" class="load-more-wrap hidden">
                 <button id="btn-load-more" class="pill-btn"></button>
+              </div>
+            </div>
+
+            <div id="pdf-pane" class="pdf-pane hidden" aria-label="PDF Preview">
+              <div class="pdf-toolbar">
+                <div class="pdf-nav">
+                  <button type="button" id="pdf-prev" class="mini-btn" data-i18n-title="pdfPrev">‹</button>
+                  <input type="number" id="pdf-page-input" class="pdf-page-input" min="1" value="1" aria-label="Page" />
+                  <span id="pdf-page-total" class="pdf-page-total">/ 0</span>
+                  <button type="button" id="pdf-next" class="mini-btn" data-i18n-title="pdfNext">›</button>
+                </div>
+                <div class="pdf-zoom">
+                  <button type="button" id="pdf-zoom-out" class="mini-btn" data-i18n-title="pdfZoomOut">−</button>
+                  <span id="pdf-zoom-label" class="pdf-zoom-label">100%</span>
+                  <button type="button" id="pdf-zoom-in" class="mini-btn" data-i18n-title="pdfZoomIn">+</button>
+                  <button type="button" id="pdf-fit" class="mini-btn" data-i18n="pdfFitWidth">Fit</button>
+                </div>
+                <div class="pdf-actions">
+                  <button type="button" id="pdf-sync-forward" class="mini-btn" disabled data-i18n="synctexForwardShort" data-i18n-title="synctexForwardTitle">Sync</button>
+                  <button type="button" id="pdf-open-external" class="mini-btn" data-i18n="pdfExternal" data-i18n-title="pdfExternal">External</button>
+                  <button type="button" id="pdf-close" class="mini-btn" data-i18n-title="pdfClose">✕</button>
+                </div>
+              </div>
+              <div id="pdf-status" class="pdf-status hidden" role="status"></div>
+              <div id="pdf-viewport" class="pdf-viewport">
+                <div id="pdf-pages" class="pdf-pages"></div>
               </div>
             </div>
           </div>
@@ -562,6 +592,7 @@
     <pre id="latex-log" class="latex-log hidden" tabindex="0" data-i18n-title="latexLog"></pre>
     <div class="close-dialog-actions latex-actions">
       <button type="button" id="latex-copy" disabled data-i18n="latexCopy">Copy log</button>
+      <button type="button" id="latex-open-external" disabled data-i18n="pdfExternal">External PDF</button>
       <button type="button" id="latex-open" disabled data-i18n="latexOpenPdf">Open PDF</button>
       <button type="button" id="latex-close" data-i18n="closeCancel">Close</button>
       <button type="button" id="latex-build" class="close-dialog-save" disabled data-i18n="latexSaveBuild">Save and compile</button>
@@ -611,6 +642,7 @@
   <script src="/katex/mhchem.min.js"></script>
   <script src="/i18n.js"></script>
   <script src="/diagrams.js"></script>
+  <script src="/pdf-viewer.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

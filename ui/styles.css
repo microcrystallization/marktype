@@ -912,24 +912,122 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
 .panes-wrap.mode-source .preview-pane,
 .panes-wrap.mode-source .split-divider,
 .panes-wrap.tex-document .preview-pane,
-.panes-wrap.tex-document .split-divider {
+.panes-wrap.tex-document:not(.tex-pdf-open) .split-divider {
   display: none;
 }
 
-.panes-wrap.mode-live .split-divider,
+.panes-wrap.mode-live:not(.tex-pdf-open) .split-divider,
 .panes-wrap.mode-live .preview-pane {
   display: none;
 }
 
-.panes-wrap.mode-source .source-pane,
-.panes-wrap.tex-document .source-pane,
-.panes-wrap.mode-live .source-pane {
+.panes-wrap.mode-source:not(.tex-pdf-open) .source-pane,
+.panes-wrap.tex-document:not(.tex-pdf-open) .source-pane,
+.panes-wrap.mode-live:not(.tex-pdf-open) .source-pane {
   flex: 1 !important;
   width: 100% !important;
 }
 
+.panes-wrap.tex-document.tex-pdf-open .split-divider {
+  display: block;
+}
+
+.panes-wrap.tex-document.tex-pdf-open .pdf-pane {
+  display: flex;
+}
+
 .tex-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 5px 14px; border-bottom: 1px solid var(--hairline); color: var(--muted); }
+.tex-tools-actions { display: flex; align-items: center; gap: 6px; }
+.pdf-pane {
+  position: relative;
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  background: var(--preview-panel);
+  overflow: hidden;
+}
+.pdf-pane.hidden { display: none !important; }
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.pdf-nav, .pdf-zoom, .pdf-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.pdf-page-input {
+  width: 48px;
+  padding: 2px 6px;
+  text-align: center;
+  border-radius: 5px;
+  border: 1px solid var(--hairline);
+  background: var(--code-bg);
+  color: var(--text);
+  font: 12px/1.4 var(--font-mono);
+}
+.pdf-page-total, .pdf-zoom-label {
+  font: 12px/1.4 var(--font-mono);
+  color: var(--muted);
+  min-width: 34px;
+  text-align: center;
+}
+.pdf-status {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--hairline);
+}
+.pdf-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px 36px;
+}
+.pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.pdf-page-wrap {
+  position: relative;
+  background: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  cursor: crosshair;
+  flex-shrink: 0;
+}
+.pdf-page-canvas {
+  display: block;
+}
+.pdf-synctex-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pdf-synctex-box {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+  animation: pdf-synctex-pulse 2.4s ease-out forwards;
+}
+@keyframes pdf-synctex-pulse {
+  0% { opacity: 0.95; transform: scale(1.02); }
+  20% { opacity: 0.85; transform: scale(1); }
+  75% { opacity: 0.65; }
+  100% { opacity: 0; }
+}
 .tex-document.mode-live .editor-host .cm-scroller { justify-content: start; }
 .tex-document.mode-live .editor-host .cm-content { max-width: none; }
 .latex-dialog.close-dialog { width: min(760px, calc(100vw - 40px)); }

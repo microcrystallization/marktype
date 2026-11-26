@@ -7,5 +7,6 @@ pub mod latex;
 pub mod markdown;
 pub mod settings;
 mod storage;
+pub mod synctex;
 pub mod wallpaper;
 pub mod workspace;
