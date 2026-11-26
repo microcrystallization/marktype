@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -39,6 +39,71 @@ pub(crate) fn child_path(dir: &Path, name: &str, markdown: bool) -> Result<PathB
         return Ok(dir.join(format!("{name}.md")));
     }
     Ok(path)
+}
+
+pub(crate) fn rename_item(path: &Path, target: &Path) -> Result<(), String> {
+    let rename_error = |error| format!("Cannot rename workspace item: {error}");
+    match std::fs::symlink_metadata(target) {
+        Ok(_) => {
+            let name = target.file_name().expect("workspace item name");
+            // On a case-insensitive volume the lookup can resolve to the old spelling.
+            let case_change = path.file_name().is_some_and(|old| {
+                old.to_string_lossy()
+                    .eq_ignore_ascii_case(&name.to_string_lossy())
+            });
+            if !case_change {
+                return Err("An item already has that name".into());
+            }
+            let parent = path.parent().expect("workspace item parent");
+            for entry in std::fs::read_dir(parent).map_err(rename_error)? {
+                if entry.map_err(rename_error)?.file_name() == name {
+                    return Err("An item already has that name".into());
+                }
+            }
+            // This is a spelling change for the existing entry on a case-insensitive volume.
+            return std::fs::rename(path, target).map_err(rename_error);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(rename_error(error)),
+    }
+    rename_without_replace(path, target).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            "An item already has that name".into()
+        } else {
+            rename_error(error)
+        }
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn rename_without_replace(path: &Path, target: &Path) -> io::Result<()> {
+    use rustix::fs::{self, CWD, RenameFlags};
+    fs::renameat_with(CWD, path, CWD, target, RenameFlags::NOREPLACE).map_err(Into::into)
+}
+
+#[cfg(target_os = "windows")]
+fn rename_without_replace(path: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let encode = |name: &Path| {
+        name.as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>()
+    };
+    let parent = std::fs::canonicalize(path.parent().expect("workspace item parent"))?;
+    let path = encode(&parent.join(path.file_name().expect("workspace item name")));
+    let target = encode(&parent.join(target.file_name().expect("target item name")));
+    // Both buffers are UTF-16 strings with trailing NULs and live through the call.
+    if unsafe { MoveFileExW(path.as_ptr(), target.as_ptr(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn rename_without_replace(path: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(path, target)
 }
 
 pub(crate) fn create_document(path: &Path) -> std::io::Result<()> {
@@ -205,5 +270,33 @@ mod tests {
         assert!(create_document(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "Keep this text");
         assert!(child_path(dir.path(), "../outside", false).is_err());
+    }
+
+    #[test]
+    fn workspace_case_change_preserves_a_distinct_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("draft.tex");
+        let target = dir.path().join("Draft.tex");
+        std::fs::write(&source, "first paper").unwrap();
+        if target.exists() {
+            rename_item(&source, &target).unwrap();
+            let entry = std::fs::read_dir(dir.path())
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(entry.file_name(), "Draft.tex");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "first paper");
+        } else {
+            std::fs::write(&target, "second paper").unwrap();
+            assert!(rename_item(&source, &target).is_err());
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "first paper");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "second paper");
+        }
+        let other = dir.path().join("another.tex");
+        std::fs::write(&other, "another paper").unwrap();
+        assert!(rename_without_replace(&other, &target).is_err());
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "another paper");
+        assert_ne!(std::fs::read_to_string(&target).unwrap(), "another paper");
     }
 }

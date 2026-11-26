@@ -74,6 +74,7 @@ pub struct AppState {
     pub prepared_wp: Option<Prepared>,
     pub wp_error: Option<String>,
     pub folder_root: Option<PathBuf>,
+    latex_mains: HashMap<PathBuf, PathBuf>,
     autosaves: HashMap<String, Instant>,
     pending_close: Option<CloseRequest>,
     disk: HashMap<String, TrackedFile>,
@@ -166,6 +167,7 @@ impl AppState {
             prepared_wp: None,
             wp_error: None,
             folder_root,
+            latex_mains: HashMap::new(),
             autosaves: HashMap::new(),
             pending_close: None,
             disk: HashMap::new(),
@@ -195,6 +197,42 @@ impl AppState {
 
     pub fn active_doc(&self) -> Option<&Document> {
         self.active_tab.and_then(|i| self.docs.get(i))
+    }
+
+    pub fn active_latex_main(&self) -> Option<PathBuf> {
+        let path = self.active_doc()?.path.as_deref()?;
+        latex::project_source(path).then_some(())?;
+        self.latex_mains
+            .get(path)
+            .and_then(|main| latex::main_file(main).ok())
+            .or_else(|| latex::detect_root(path, self.folder_root.as_deref()))
+            .or_else(|| {
+                // A chapter may omit a root directive when the main document is already open.
+                let scope = self
+                    .docs
+                    .iter()
+                    .filter_map(|doc| doc.path.as_deref())
+                    .filter(|source| *source != path && latex::project_source(source))
+                    .filter_map(|source| {
+                        self.latex_mains
+                            .get(source)
+                            .cloned()
+                            .or_else(|| latex::detect_root(source, None))
+                    })
+                    .filter_map(|root| {
+                        root.parent()
+                            .filter(|dir| path.starts_with(dir))
+                            .map(Path::to_path_buf)
+                    })
+                    .min_by_key(|dir| dir.components().count())?;
+                latex::detect_root(path, Some(&scope))
+            })
+    }
+
+    pub fn set_latex_main(&mut self, source: &Path, main: PathBuf) {
+        if latex::project_source(source) {
+            self.latex_mains.insert(source.to_path_buf(), main);
+        }
     }
 
     pub fn active_doc_mut(&mut self) -> Option<&mut Document> {
@@ -619,6 +657,7 @@ impl AppState {
 
     pub fn active_doc_snapshot(&mut self, max_initial_blocks: usize) -> Value {
         let split = self.settings.view_mode == ViewMode::Split;
+        let tex_main = self.active_latex_main();
         let Some(doc) = self.active_doc_mut() else {
             return Value::Null;
         };
@@ -653,6 +692,7 @@ impl AppState {
             "blocks": blocks,
             "previewDeferred": deferred,
             "texSource": tex_source,
+            "texMain": tex_main,
             "totalBlocks": total_blocks,
             "outline": outline,
             "stats": stats,
@@ -746,16 +786,7 @@ impl AppState {
                         path.is_file(),
                     )?;
                     if target != path {
-                        let same_case_insensitive =
-                            cfg!(any(target_os = "windows", target_os = "macos"))
-                                && target
-                                    .to_string_lossy()
-                                    .eq_ignore_ascii_case(&path.to_string_lossy());
-                        if !same_case_insensitive && std::fs::symlink_metadata(&target).is_ok() {
-                            return Err("An item already has that name".into());
-                        }
-                        std::fs::rename(&path, &target)
-                            .map_err(|error| format!("Cannot rename workspace item: {error}"))?;
+                        workspace::rename_item(&path, &target)?;
                         for doc in &mut self.docs {
                             if let Some(relative) = doc
                                 .path
@@ -2016,6 +2047,7 @@ mod tests {
             prepared_wp: None,
             wp_error: None,
             folder_root: None,
+            latex_mains: HashMap::new(),
             autosaves: HashMap::new(),
             pending_close: None,
             disk,
@@ -2035,6 +2067,64 @@ mod tests {
             Some(dunce::canonicalize(path).unwrap()),
             "original",
         )
+    }
+
+    #[test]
+    fn resolves_the_main_file_for_each_latex_tab_in_a_shared_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = dir.path().join("alpha.tex");
+        let beta = dir.path().join("beta.tex");
+        let chapter = dir.path().join("chapter.tex");
+        let mut docs = Vec::new();
+        for (id, path, source) in [
+            ("a", &alpha, "\\documentclass{article}\n"),
+            ("b", &beta, "\\documentclass{article}\n"),
+            ("chapter", &chapter, "Chapter text\n"),
+        ] {
+            std::fs::write(path, source).unwrap();
+            docs.push(Document::new(
+                id.into(),
+                path.file_name().unwrap().to_string_lossy().into(),
+                Some(dunce::canonicalize(path).unwrap()),
+                source,
+            ));
+        }
+        let mut state = test_state(docs);
+        assert_eq!(
+            state.active_latex_main(),
+            Some(dunce::canonicalize(alpha).unwrap())
+        );
+        state.active_tab = Some(1);
+        let beta = dunce::canonicalize(beta).unwrap();
+        assert_eq!(
+            state.active_doc_snapshot(0)["texMain"],
+            beta.to_string_lossy().as_ref()
+        );
+        state.active_tab = Some(2);
+        assert_eq!(state.active_latex_main(), None);
+        state.set_latex_main(&dunce::canonicalize(chapter).unwrap(), beta.clone());
+        assert_eq!(state.active_latex_main(), Some(beta));
+    }
+
+    #[test]
+    fn finds_the_open_main_file_for_a_nested_chapter_without_a_root_directive() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main.tex");
+        let sections = dir.path().join("sections");
+        std::fs::create_dir(&sections).unwrap();
+        let mut main_doc = saved_document(&main);
+        main_doc.id = "main".into();
+        std::fs::write(&main, "\\documentclass{article}\n").unwrap();
+        let mut state = test_state(vec![
+            saved_document(&sections.join("chapter.tex")),
+            main_doc,
+        ]);
+        assert_eq!(
+            state.active_latex_main(),
+            Some(dunce::canonicalize(main).unwrap())
+        );
+        state.docs.pop();
+        assert_eq!(state.active_latex_main(), None);
     }
 
     #[test]

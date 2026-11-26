@@ -51,7 +51,7 @@
         window.addEventListener("error", (ev) => errors.push(String(ev.message || ev.error)));
         const origRecv = window.__mtReceive;
         window.__mtReceive = (msg) => {
-          if (msg?.event?.startsWith("synctex") || msg?.event?.startsWith("pdf")) events.push(msg);
+          if (msg?.event?.startsWith("synctex") || msg?.event?.startsWith("pdf") || msg?.event === "tabSwitched") events.push(msg);
           try { return origRecv(msg); } catch (err) { errors.push(String(err)); throw err; }
         };
         document.getElementById("btn-tex-sync").click();
@@ -64,6 +64,41 @@
           }) + ")",
           () => document.querySelector(".pdf-synctex-box")
         );
+
+        const pages = document.getElementById("pdf-pages");
+        const viewport = document.getElementById("pdf-viewport");
+        const firstPage = pages.firstElementChild;
+        for (let i = 0; i < 10; i++) document.getElementById("pdf-zoom-in").click();
+        if (pages.firstElementChild !== firstPage || !pages.querySelector(".pdf-synctex-box")) {
+          throw new Error("Zoom recreated the PDF layout or lost the current highlight");
+        }
+        viewport.scrollLeft = 0;
+        if (firstPage.getBoundingClientRect().left < viewport.getBoundingClientRect().left) {
+          throw new Error("The PDF page is clipped at the horizontal scroll limit");
+        }
+        document.getElementById("pdf-fit").click();
+
+        const source = (name) => document.getElementById("latex-main").value.replace(/main\.tex$/i, `sections/${name}.tex`);
+        const open = (name) => window.ipc.postMessage(JSON.stringify({ cmd: "openPath", path: source(name) }));
+        const active = (name) => document.querySelector(".doc-tab.active")?.textContent.includes(`${name}.tex`);
+        open("results");
+        await waitFor("results chapter did not open", () => active("results"));
+        editor.select(4, 5);
+        const forwarded = () => events.filter((entry) => entry.event === "synctexForwardResult").length;
+        const count = forwarded();
+        document.getElementById("btn-tex-sync").click();
+        await waitFor("Results did not locate its PDF page", () => forwarded() > count &&
+          pages.querySelector('.pdf-page-wrap[data-page="2"] .pdf-synctex-box'));
+        open("introduction");
+        await waitFor("introduction chapter did not open", () => active("introduction"));
+        const highlight = pages.querySelector('.pdf-page-wrap[data-page="2"] .pdf-synctex-box');
+        if (!highlight) throw new Error("Switching to a chapter of the same project lost its PDF");
+        const rect = highlight.getBoundingClientRect();
+        highlight.dispatchEvent(new MouseEvent("dblclick", {
+          bubbles: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+        }));
+        await waitFor(() => "Inverse SyncTeX did not return to the results chapter (" + JSON.stringify(events.filter((event) => event.event?.startsWith("synctex"))) + ")",
+          () => active("results") && events.some((event) => event.event === "synctexInverseResult" && /[/\\]results\.tex$/i.test(event.path)));
         window.ipc.postMessage(JSON.stringify({ cmd: "smokeResult" }));
         return;
       }

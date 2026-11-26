@@ -749,6 +749,7 @@
     if (state.doc && active && state.doc.path !== active.path) {
       state.doc.path = active.path;
       state.doc.texSource = active.texSource;
+      state.doc.texMain = null;
       state.editor?.setSourceType(active.texSource);
       applyTexMode();
       state.previewNeedsRefresh = true;
@@ -1527,48 +1528,30 @@
   const latexMain = $("latex-main");
   const latexLog = $("latex-log");
   const latexStatus = $("latex-status");
-  const latexRoots = new Map();
-  let latexContext, latexRequest, latexBuilding = false, latexOutput, latexLastMain, latexPdfUrl = null, latexHasSyncTex = false;
+  let latexContext, latexRequest, latexBuilding = false, latexOutput, latexLastMain, latexPdfUrl, latexPdfHasSyncTex;
 
   const elPdfPane = $("pdf-pane");
-  let pdfPaneOpen = false;
+  let pdfTarget = null;
   let pdfState = { loaded: false, path: null, hasSyncTex: false };
+  let pdfLoadRequest = null;
+  let pdfSyncRequest = null;
   let pendingForwardSync = null;
 
-  function normDir(filePath) {
-    if (!filePath) return "";
-    const norm = filePath.replaceAll("\\", "/");
-    const idx = norm.lastIndexOf("/");
-    const dir = idx >= 0 ? norm.slice(0, idx + 1) : "";
-    return state.platform === "windows" ? dir.toLowerCase() : dir;
-  }
-
-  function activeDocMatchesPdf(pdfPath) {
-    if (!pdfPath || !state.doc?.path) return false;
-    const docNorm = state.platform === "windows"
-      ? state.doc.path.replaceAll("\\", "/").toLowerCase()
-      : state.doc.path.replaceAll("\\", "/");
-    const dir = normDir(pdfPath);
-    return Boolean(dir) && docNorm.startsWith(dir);
+  function sameProject(main) {
+    return Boolean(main && state.doc?.texSource && state.doc.texMain === main);
   }
 
   function syncPdfPaneVisibility() {
-    if (!state.doc) {
-      if (pdfPaneOpen || pdfState.loaded) closeBuiltInPdf();
-      return;
-    }
-    if (state.doc.texSource && pdfState.path && !activeDocMatchesPdf(pdfState.path)) {
+    if (pdfTarget && !sameProject(pdfTarget.main)) {
       closeBuiltInPdf();
       return;
     }
-    const show = Boolean(state.doc?.texSource) && pdfPaneOpen;
+    const show = Boolean(pdfTarget);
     elPanesWrap.classList.toggle("tex-pdf-open", show);
     elPdfPane.classList.toggle("hidden", !show);
     $("btn-tex-pdf").classList.toggle("active", show);
-    const matchingOutput = activeDocMatchesPdf(latexOutput) && latexHasSyncTex;
-    const canSync = Boolean(state.doc?.texSource) && (pdfState.hasSyncTex || matchingOutput);
-    $("btn-tex-sync").disabled = !canSync;
-    $("pdf-sync-forward").disabled = !pdfState.hasSyncTex;
+    $("btn-tex-sync").disabled = !state.doc?.texMain;
+    $("pdf-sync-forward").disabled = !show || !pdfState.loaded || !pdfState.hasSyncTex;
   }
 
   const pdfViewer = window.MTPdfViewer.create({
@@ -1579,12 +1562,17 @@
     zoomLabelEl: $("pdf-zoom-label"),
     statusEl: $("pdf-status"),
     onInverseSync(info) {
-      send({ cmd: "synctexInverse", pdf: info.path, page: info.page, x: info.x, y: info.y });
+      if (pdfState.hasSyncTex && pdfTarget?.path === info.path) {
+        const request = ++requestSequence;
+        pdfSyncRequest = { request, doc: state.doc, inverse: true };
+        pendingForwardSync = null;
+        send({ cmd: "synctexInverse", request, pdf: info.path, page: info.page, x: info.x, y: info.y });
+      }
     },
     onStateChange(next) {
       pdfState = next;
       syncPdfPaneVisibility();
-      if (next.loaded && pendingForwardSync) {
+      if (next.loaded && pendingForwardSync?.doc === state.doc && pendingForwardSync.path === next.path) {
         const target = pendingForwardSync;
         pendingForwardSync = null;
         pdfViewer.highlight(target.page, target.boxes);
@@ -1593,36 +1581,35 @@
   });
 
   function openBuiltInPdf(url, meta) {
-    pdfPaneOpen = true;
+    if (!sameProject(meta.main)) return;
+    pdfTarget = { main: meta.main, path: meta.path };
     syncPdfPaneVisibility();
     pdfViewer.open(url, { ...meta, loadingText: t("pdfLoading") });
   }
 
   function closeBuiltInPdf() {
+    if (pdfSyncRequest?.inverse) send({ cmd: "synctexCancel", request: pdfSyncRequest.request });
     pendingForwardSync = null;
-    pdfPaneOpen = false;
+    pdfLoadRequest = null;
+    pdfSyncRequest = null;
+    pdfTarget = null;
     pdfViewer.close();
-    elPanesWrap.classList.remove("tex-pdf-open");
-    elPdfPane.classList.add("hidden");
-    $("btn-tex-pdf").classList.remove("active");
-    $("pdf-sync-forward").disabled = true;
-    const matchingOutput = Boolean(state.doc?.texSource) && activeDocMatchesPdf(latexOutput) && latexHasSyncTex;
-    $("btn-tex-sync").disabled = !matchingOutput;
+  }
+
+  function requestPdfPreview(preserveScroll = false) {
+    const request = ++requestSequence;
+    pdfLoadRequest = { request, doc: state.doc };
+    send({ cmd: "openPdfPreview", request, preserveScroll });
   }
 
   function triggerForwardSync() {
     if (!state.doc?.texSource) return;
-    const activePdf = activeDocMatchesPdf(pdfState.path)
-      ? pdfState.path
-      : activeDocMatchesPdf(latexOutput)
-        ? latexOutput
-        : undefined;
-    const knownMain = latexRoots.get(state.doc.path || "") || undefined;
+    const request = ++requestSequence;
+    pdfSyncRequest = { request, doc: state.doc };
+    pendingForwardSync = null;
     send({
       cmd: "synctexForward",
-      pdf: activePdf,
-      main: knownMain,
-      file: state.doc.path || undefined,
+      request,
       line: (state.activeLine || 0) + 1,
     });
   }
@@ -1650,7 +1637,7 @@
       const context = active?.path || "";
       if (latexContext !== context || !latexMain.value) {
         latexContext = context;
-        latexMain.value = latexRoots.get(context) || "";
+        latexMain.value = state.doc?.texMain || "";
         latexStatus.textContent = t("latexSelect");
         setLatexLog("");
         if (!latexMain.value) send({ cmd: "latexProject", request: latexRequest = ++requestSequence });
@@ -1662,13 +1649,11 @@
   $("btn-latex").onclick = openLatexDialog;
   $("btn-tex-tools").onclick = openLatexDialog;
   $("btn-tex-pdf").onclick = () => {
-    if (pdfPaneOpen) {
+    if (pdfTarget) {
       closeBuiltInPdf();
       return;
     }
-    const knownMain = latexRoots.get(state.doc?.path || "") || undefined;
-    const activePdf = activeDocMatchesPdf(latexOutput) ? latexOutput : undefined;
-    send({ cmd: "openPdfPreview", main: knownMain, pdf: activePdf });
+    requestPdfPreview();
   };
   $("btn-tex-sync").onclick = triggerForwardSync;
   $("pdf-prev").onclick = () => pdfViewer.prevPage();
@@ -1692,12 +1677,13 @@
     latexDialog.close();
     if (latexPdfUrl && latexOutput) {
       openBuiltInPdf(latexPdfUrl, {
+        main: latexLastMain,
         path: latexOutput,
-        hasSyncTex: latexHasSyncTex,
+        hasSyncTex: latexPdfHasSyncTex,
         preserveScroll: true,
       });
     } else {
-      send({ cmd: "openPdfPreview", pdf: latexOutput || undefined, main: latexMain.value || undefined });
+      requestPdfPreview();
     }
   };
   $("latex-open-external").onclick = () => send({ cmd: "openLatexPdf", path: latexOutput || undefined });
@@ -2376,7 +2362,10 @@
         if (msg.request !== latexRequest) break;
         if (msg.main) {
           latexMain.value = msg.main;
-          latexRoots.set(latexContext, msg.main);
+          if (state.doc?.path === latexContext) {
+            state.doc.texMain = msg.main;
+            syncPdfPaneVisibility();
+          }
           latexStatus.textContent = "";
           setLatexLog("");
         }
@@ -2387,6 +2376,10 @@
       case "latexStarted":
         if (msg.tabs) applyTabSummaries(msg.tabs);
         latexMain.value = msg.main;
+        if (state.doc && msg.docId === state.activeTabId) {
+          state.doc.texMain = msg.main;
+          syncPdfPaneVisibility();
+        }
         latexStatus.textContent = t("latexRunning", { compiler: msg.compiler });
         break;
 
@@ -2402,15 +2395,17 @@
         if (msg.result?.pdf) {
           latexOutput = msg.result.pdf;
           latexPdfUrl = msg.pdfUrl || null;
-          latexHasSyncTex = Boolean(msg.hasSyncTex);
+          latexPdfHasSyncTex = Boolean(msg.hasSyncTex);
         }
         latexStatus.textContent = msg.error || msg.result?.error || t("latexReady", { path: latexOutput });
         setLatexLog(msg.result?.log || msg.log);
         refreshLatexControls();
-        if (msg.result?.pdf && latexPdfUrl && state.doc?.texSource && activeDocMatchesPdf(latexOutput)) {
+        if (msg.result?.pdf && latexPdfUrl && sameProject(latexLastMain)) {
+          pendingForwardSync = null;
           openBuiltInPdf(latexPdfUrl, {
+            main: latexLastMain,
             path: latexOutput,
-            hasSyncTex: latexHasSyncTex,
+            hasSyncTex: latexPdfHasSyncTex,
             preserveScroll: true,
           });
         } else {
@@ -2419,46 +2414,46 @@
         break;
 
       case "pdfLoaded":
-        latexOutput = msg.path;
-        latexPdfUrl = msg.url;
-        latexHasSyncTex = Boolean(msg.hasSyncTex);
+        if (!pdfLoadRequest || pdfLoadRequest.request !== msg.request || pdfLoadRequest.doc !== state.doc) break;
+        pdfLoadRequest = null;
+        state.doc.texMain = msg.main;
         openBuiltInPdf(msg.url, {
+          main: msg.main,
           path: msg.path,
           title: msg.title,
-          hasSyncTex: latexHasSyncTex,
+          hasSyncTex: Boolean(msg.hasSyncTex),
           preserveScroll: Boolean(msg.preserveScroll),
         });
         break;
 
       case "pdfError":
+        if (!pdfLoadRequest || pdfLoadRequest.request !== msg.request || pdfLoadRequest.doc !== state.doc) break;
+        pdfLoadRequest = null;
         pendingForwardSync = null;
         showToast(msg.message || "Cannot open PDF");
         break;
 
       case "synctexForwardResult":
+        if (!pdfSyncRequest || pdfSyncRequest.request !== msg.request || pdfSyncRequest.doc !== state.doc) break;
+        pdfSyncRequest = null;
         if (msg.error) {
           showToast(msg.error);
-        } else if (!pdfPaneOpen || !pdfState.loaded) {
-          pendingForwardSync = { page: msg.page, boxes: msg.boxes };
-          if (latexPdfUrl && latexOutput) {
-            openBuiltInPdf(latexPdfUrl, {
-              path: latexOutput,
-              hasSyncTex: true,
-              preserveScroll: true,
-            });
-          } else {
-            send({ cmd: "openPdfPreview", pdf: latexOutput || undefined, main: latexMain.value || undefined, preserveScroll: true });
-          }
-        } else if (!pdfViewer.highlight(msg.page, msg.boxes)) {
-          pendingForwardSync = { page: msg.page, boxes: msg.boxes };
+          break;
+        }
+        state.doc.texMain = msg.main;
+        if (pdfTarget?.path !== msg.path || !pdfState.loaded || !pdfViewer.highlight(msg.page, msg.boxes)) {
+          pendingForwardSync = { doc: state.doc, path: msg.path, page: msg.page, boxes: msg.boxes };
+          if (pdfTarget?.path !== msg.path) requestPdfPreview(true);
         }
         break;
 
       case "synctexInverseResult":
+        if (pdfSyncRequest?.request !== msg.request) break;
+        pdfSyncRequest = null;
         if (msg.error) {
           showToast(msg.error);
         } else if (msg.line) {
-          jumpToLine(Math.max(0, Number(msg.line) - 1));
+          jumpToLine(Math.max(0, Number(msg.line) - 1), { col: Math.max(0, Number(msg.column || 1) - 1) });
         }
         break;
 

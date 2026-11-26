@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  const RENDER_MARGIN = 350;
+  const MAX_PAGE_PIXELS = 8 * 1024 * 1024;
+  const MAX_CACHED_PIXELS = 24 * 1024 * 1024;
   let pdfjsPromise = null;
 
   function loadPdfJs() {
@@ -45,19 +48,22 @@
     let loadSerial = 0;
     let layoutSerial = 0;
     let currentUrl = null;
-    let loadingUrl = null;
+    let pendingLoad = null;
     let currentPath = null;
     let currentTitle = "";
     let hasSyncTex = false;
     let fitMode = true;
     let scale = 1.0;
     let currentPage = 1;
-    let pageMeta = []; // cached { baseViewport, widthPt, heightPt } per page
+    let pageMeta = [];
     let pageSlots = [];
+    const rasters = new Set();
+    let rasterPixels = 0;
     let observer = null;
     let resizeTimer = null;
     let highlightTimer = null;
     let activeHighlight = null;
+    let highlightSlot = null;
     let lastLayoutWidth = 0;
     let lastInverseAt = 0;
 
@@ -101,15 +107,37 @@
       }
     }
 
-    function cancelAllRenders() {
-      for (const slot of pageSlots) {
-        slot.renderGen++;
-        if (slot.renderTask) {
-          try { slot.renderTask.cancel(); } catch {}
-          slot.renderTask = null;
-        }
-        slot.renderedScale = 0;
+    function releaseRaster(slot) {
+      rasters.delete(slot);
+      slot.renderGen++;
+      slot.rendering = false;
+      slot.renderTask?.cancel();
+      slot.renderTask = null;
+      rasterPixels -= slot.pixels;
+      slot.pixels = 0;
+      if (slot.canvas) {
+        slot.canvas.width = slot.canvas.height = 1;
+        slot.canvas.remove();
+        slot.canvas = null;
       }
+      delete slot.wrap.dataset.rendered;
+    }
+
+    function pruneRasters() {
+      for (const slot of rasters) {
+        if (!isNearViewport(slot)) releaseRaster(slot);
+      }
+    }
+
+    function isNearViewport(slot) {
+      const top = viewportEl.scrollTop;
+      return slot.wrap.offsetTop + slot.wrap.offsetHeight >= top - RENDER_MARGIN
+        && slot.wrap.offsetTop <= top + viewportEl.clientHeight + RENDER_MARGIN;
+    }
+
+    function setPageSize(wrap, base) {
+      wrap.style.setProperty("--pdf-page-width", `${base.width}px`);
+      wrap.style.setProperty("--pdf-page-height", `${base.height}px`);
     }
 
     function computeFitScale(pageWidthPt) {
@@ -119,178 +147,144 @@
 
     async function renderSlot(slot, docSerial, laySerial) {
       if (!pdfDoc || docSerial !== loadSerial || laySerial !== layoutSerial) return;
-      const targetScale = slot.scale;
-      if (slot.renderedScale === targetScale && !slot.renderTask) return;
-
+      if (slot.rendering || slot.canvas) return;
       const gen = ++slot.renderGen;
-      if (slot.renderTask) {
-        const prev = slot.renderTask;
-        slot.renderTask = null;
-        try { prev.cancel(); } catch {}
-        try { await prev.promise; } catch {}
-      }
-      if (!pdfDoc || docSerial !== loadSerial || laySerial !== layoutSerial || gen !== slot.renderGen) {
-        return;
-      }
-
-      const page = await pdfDoc.getPage(slot.pageNum);
-      if (!pdfDoc || docSerial !== loadSerial || laySerial !== layoutSerial || gen !== slot.renderGen) {
-        return;
-      }
-
-      const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-      const cssViewport = page.getViewport({ scale: targetScale });
-      const renderViewport = page.getViewport({ scale: targetScale * dpr });
-
-      slot.viewport = cssViewport;
-      slot.wrap.style.width = `${cssViewport.width}px`;
-      slot.wrap.style.height = `${cssViewport.height}px`;
-      slot.canvas.width = Math.max(1, Math.floor(renderViewport.width));
-      slot.canvas.height = Math.max(1, Math.floor(renderViewport.height));
-      slot.canvas.style.width = `${cssViewport.width}px`;
-      slot.canvas.style.height = `${cssViewport.height}px`;
-
-      const ctx = slot.canvas.getContext("2d", { alpha: false });
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, slot.canvas.width, slot.canvas.height);
-
-      const task = page.render({ canvasContext: ctx, viewport: renderViewport });
-      slot.renderTask = task;
+      slot.rendering = true;
+      rasters.add(slot);
       try {
-        await task.promise;
-        if (docSerial === loadSerial && laySerial === layoutSerial && gen === slot.renderGen) {
-          slot.renderedScale = targetScale;
-          slot.wrap.dataset.rendered = "true";
+        const page = await pdfDoc.getPage(slot.pageNum);
+        if (docSerial !== loadSerial || laySerial !== layoutSerial || gen !== slot.renderGen) return;
+        let base = pageMeta[slot.pageNum - 1];
+        if (!base) {
+          base = pageMeta[slot.pageNum - 1] = page.getViewport({ scale: 1 });
+          setPageSize(slot.wrap, base);
+          if (highlightSlot === slot && activeHighlight) {
+            const result = renderHighlightBoxes(activeHighlight.pageNum, activeHighlight.boxes);
+            if (result) revealHighlight(result, "instant");
+          }
         }
+        const cssViewport = base.clone({ scale });
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2.5,
+          Math.sqrt(MAX_PAGE_PIXELS / (cssViewport.width * cssViewport.height)),
+          8192 / Math.max(cssViewport.width, cssViewport.height));
+        const renderViewport = base.clone({ scale: scale * dpr });
+        const width = Math.max(1, Math.floor(renderViewport.width));
+        const height = Math.max(1, Math.floor(renderViewport.height));
+        const pixels = width * height;
+        while (rasterPixels + pixels > MAX_CACHED_PIXELS) {
+          let farthest = null;
+          for (const candidate of rasters) {
+            if (!candidate.pixels) continue;
+            if (!farthest || Math.abs(candidate.pageNum - currentPage) > Math.abs(farthest.pageNum - currentPage)) {
+              farthest = candidate;
+            }
+          }
+          if (!farthest) break;
+          if (Math.abs(slot.pageNum - currentPage) > Math.abs(farthest.pageNum - currentPage)) {
+            rasters.delete(slot);
+            return;
+          }
+          releaseRaster(farthest);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.className = "pdf-page-canvas";
+        canvas.width = width;
+        canvas.height = height;
+        canvas.style.width = `${cssViewport.width}px`;
+        canvas.style.height = `${cssViewport.height}px`;
+        slot.canvas = canvas;
+        slot.pixels = pixels;
+        rasterPixels += pixels;
+        slot.wrap.prepend(canvas);
+        slot.renderTask = page.render({ canvasContext: canvas.getContext("2d", { alpha: false }), viewport: renderViewport });
+        await slot.renderTask.promise;
+        if (gen === slot.renderGen) slot.wrap.dataset.rendered = "true";
       } catch (err) {
+        if (gen === slot.renderGen) releaseRaster(slot);
         if (err && err.name !== "RenderingCancelledException") {
           console.warn("PDF page render failed", slot.pageNum, err);
         }
       } finally {
-        if (slot.renderTask === task) slot.renderTask = null;
+        if (gen === slot.renderGen) {
+          slot.renderTask = null;
+          slot.rendering = false;
+        }
       }
     }
 
-    async function ensurePageMeta(docSerial) {
-      if (pageMeta.length === pdfDoc.numPages) return true;
-      const list = [];
-      for (let num = 1; num <= pdfDoc.numPages; num++) {
-        const page = await pdfDoc.getPage(num);
-        if (docSerial !== loadSerial) return false;
-        const baseViewport = page.getViewport({ scale: 1.0 });
-        list.push({
-          baseViewport,
-          widthPt: baseViewport.width,
-          heightPt: baseViewport.height,
-        });
-      }
-      if (docSerial !== loadSerial) return false;
-      pageMeta = list;
-      return true;
+    function scrollAnchor() {
+      const slot = pageSlots[currentPage - 1];
+      return slot && { pageNum: slot.pageNum, offset: (viewportEl.scrollTop - slot.wrap.offsetTop) / scale };
     }
 
-    async function buildLayout(preserveRatio) {
-      if (!pdfDoc) return;
+    function buildLayout(anchor) {
+      const first = pageMeta[0];
+      if (!pdfDoc || !first) return;
       const docSerial = loadSerial;
       const laySerial = ++layoutSerial;
-      disconnectObserver();
-      cancelAllRenders();
-
-      const prevScrollTop = viewportEl.scrollTop;
-      const prevScrollHeight = Math.max(1, viewportEl.scrollHeight);
-      const ratio = preserveRatio ? prevScrollTop / prevScrollHeight : 0;
-
-      const ready = await ensurePageMeta(docSerial);
-      if (!ready || !pdfDoc || docSerial !== loadSerial || laySerial !== layoutSerial) return;
-      if (!pageMeta.length) return;
+      const previouslyRendered = [...rasters];
+      for (const slot of previouslyRendered) releaseRaster(slot);
 
       if (fitMode) {
-        scale = computeFitScale(pageMeta[0].widthPt);
+        scale = computeFitScale(first.width);
+      }
+      pagesEl.style.setProperty("--pdf-scale", scale);
+
+      if (!pageSlots.length) {
+        pagesEl.style.setProperty("--pdf-default-width", `${first.width}px`);
+        pagesEl.style.setProperty("--pdf-default-height", `${first.height}px`);
+        const fragment = document.createDocumentFragment();
+        for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+          const wrap = document.createElement("div");
+          wrap.className = "pdf-page-wrap";
+          wrap.dataset.page = String(pageNum);
+          fragment.appendChild(wrap);
+          pageSlots.push({ pageNum, wrap, canvas: null, syncLayer: null,
+            pixels: 0, rendering: false, renderTask: null, renderGen: 0 });
+        }
+        pagesEl.replaceChildren(fragment);
+        observer = new IntersectionObserver((entries) => {
+          if (docSerial !== loadSerial) return;
+          for (const entry of entries) {
+            const slot = pageSlots[Number(entry.target.dataset.page) - 1];
+            if (isNearViewport(slot) && entry.isIntersecting) renderSlot(slot, docSerial, layoutSerial);
+            else if (rasters.has(slot)) releaseRaster(slot);
+          }
+        }, { root: viewportEl, rootMargin: `${RENDER_MARGIN}px 0px` });
+        for (const slot of pageSlots) observer.observe(slot.wrap);
       }
 
-      const fragment = document.createDocumentFragment();
-      const nextSlots = [];
-
-      for (let i = 0; i < pageMeta.length; i++) {
-        const num = i + 1;
-        const meta = pageMeta[i];
-        const vp = meta.baseViewport.clone({ scale });
-        const wrap = document.createElement("div");
-        wrap.className = "pdf-page-wrap";
-        wrap.dataset.page = String(num);
-        wrap.style.width = `${vp.width}px`;
-        wrap.style.height = `${vp.height}px`;
-
-        const canvas = document.createElement("canvas");
-        canvas.className = "pdf-page-canvas";
-        canvas.width = 1;
-        canvas.height = 1;
-
-        const syncLayer = document.createElement("div");
-        syncLayer.className = "pdf-synctex-layer";
-
-        wrap.append(canvas, syncLayer);
-        fragment.appendChild(wrap);
-        nextSlots.push({
-          pageNum: num,
-          wrap,
-          canvas,
-          syncLayer,
-          viewport: vp,
-          widthPt: meta.widthPt,
-          heightPt: meta.heightPt,
-          scale,
-          renderedScale: 0,
-          renderTask: null,
-          renderGen: 0,
-        });
-      }
-
-      pageSlots = nextSlots;
-      pagesEl.replaceChildren(fragment);
       lastLayoutWidth = viewportEl.clientWidth;
 
-      if (preserveRatio && ratio > 0) {
-        viewportEl.scrollTop = Math.round(ratio * viewportEl.scrollHeight);
-      }
+      const anchored = anchor && pageSlots[Math.min(anchor.pageNum, pageSlots.length) - 1];
+      viewportEl.scrollTop = anchored ? anchored.wrap.offsetTop + anchor.offset * scale : 0;
       if (activeHighlight && Date.now() < activeHighlight.expiresAt) {
         renderHighlightBoxes(activeHighlight.pageNum, activeHighlight.boxes);
       } else {
         activeHighlight = null;
       }
 
-      observer = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (!entry.isIntersecting) continue;
-            const num = Number(entry.target.dataset.page);
-            const slot = pageSlots[num - 1];
-            if (slot) renderSlot(slot, docSerial, laySerial);
-          }
-        },
-        { root: viewportEl, rootMargin: "500px 0px" }
-      );
-      for (const slot of pageSlots) observer.observe(slot.wrap);
-
-      const initialSlot = pageSlots[Math.min(currentPage - 1, pageSlots.length - 1)] || pageSlots[0];
-      if (initialSlot) renderSlot(initialSlot, docSerial, laySerial);
       updateCurrentPageFromScroll();
+      const initialSlot = pageSlots[currentPage - 1];
+      if (initialSlot) renderSlot(initialSlot, docSerial, laySerial);
+      for (const slot of previouslyRendered) {
+        if (isNearViewport(slot)) renderSlot(slot, docSerial, laySerial);
+      }
       updateToolbar();
     }
 
     function updateCurrentPageFromScroll() {
       if (!pageSlots.length) return;
       const mid = viewportEl.scrollTop + viewportEl.clientHeight * 0.35;
-      let found = 1;
-      for (const slot of pageSlots) {
-        const top = slot.wrap.offsetTop;
-        const bottom = top + slot.wrap.offsetHeight;
-        if (mid >= top && mid <= bottom) {
-          found = slot.pageNum;
-          break;
-        }
-        if (top <= mid) found = slot.pageNum;
+      let lo = 0;
+      let hi = pageSlots.length;
+      while (lo < hi) {
+        const index = (lo + hi) >>> 1;
+        if (pageSlots[index].wrap.offsetTop <= mid) lo = index + 1;
+        else hi = index;
       }
+      const found = Math.max(1, lo);
       if (found !== currentPage) {
         currentPage = found;
         updateToolbar();
@@ -300,9 +294,8 @@
     function clearHighlights() {
       clearTimeout(highlightTimer);
       activeHighlight = null;
-      for (const slot of pageSlots) {
-        slot.syncLayer.replaceChildren();
-      }
+      highlightSlot?.syncLayer?.replaceChildren();
+      highlightSlot = null;
     }
 
     function triggerInverseAtEvent(event) {
@@ -318,11 +311,12 @@
       const rect = wrap.getBoundingClientRect();
       const cssX = Math.max(0, event.clientX - rect.left);
       const cssY = Math.max(0, event.clientY - rect.top);
-      let xPt = cssX / slot.scale;
-      let yPt = cssY / slot.scale;
-      if (slot.viewport && typeof slot.viewport.convertToPdfPoint === "function") {
-        const [pdfX, pdfY] = slot.viewport.convertToPdfPoint(cssX, cssY);
-        const vb = slot.viewport.viewBox;
+      let xPt = cssX / scale;
+      let yPt = cssY / scale;
+      const viewport = pageMeta[pageNum - 1]?.clone({ scale });
+      if (viewport && typeof viewport.convertToPdfPoint === "function") {
+        const [pdfX, pdfY] = viewport.convertToPdfPoint(cssX, cssY);
+        const vb = viewport.viewBox;
         xPt = Math.max(0, pdfX - vb[0]);
         yPt = Math.max(0, vb[3] - pdfY);
       }
@@ -331,6 +325,9 @@
 
     viewportEl.addEventListener("scroll", () => {
       updateCurrentPageFromScroll();
+      pruneRasters();
+      const slot = pageSlots[currentPage - 1];
+      if (slot) renderSlot(slot, loadSerial, layoutSerial);
     }, { passive: true });
 
     viewportEl.addEventListener("wheel", (event) => {
@@ -361,11 +358,11 @@
         resizeTimer = setTimeout(() => {
           if (!pdfDoc || !fitMode || viewportEl.clientWidth < 100) return;
           if (Math.abs(viewportEl.clientWidth - lastLayoutWidth) < 12) return;
-          if (pageMeta.length && Math.abs(computeFitScale(pageMeta[0].widthPt) - scale) < 0.01) {
+          if (pageMeta[0] && Math.abs(computeFitScale(pageMeta[0].width) - scale) < 0.01) {
             lastLayoutWidth = viewportEl.clientWidth;
             return;
           }
-          buildLayout(true);
+          buildLayout(scrollAnchor());
         }, 120);
       });
       resizeObserver.observe(viewportEl);
@@ -373,18 +370,18 @@
 
     function resetDoc() {
       disconnectObserver();
-      cancelAllRenders();
+      for (const slot of rasters) releaseRaster(slot);
       clearHighlights();
       clearTimeout(resizeTimer);
-      if (pdfDoc) {
-        const doc = pdfDoc;
-        pdfDoc = null;
-        try { doc.destroy(); } catch {}
-      }
+      const loading = pendingLoad;
+      pendingLoad = null;
+      loading?.controller.abort();
+      const task = pdfDoc || loading?.task;
+      pdfDoc = null;
+      if (task) void task.destroy().catch(() => {});
       pageMeta = [];
       pageSlots = [];
       currentUrl = null;
-      loadingUrl = null;
       currentPath = null;
       currentTitle = "";
       hasSyncTex = false;
@@ -393,52 +390,49 @@
     }
 
     async function open(url, meta = {}) {
-      if (url && ((pdfDoc && currentUrl === url) || loadingUrl === url)) {
+      if (currentUrl === url && pdfDoc) {
         if (meta.hasSyncTex !== undefined) hasSyncTex = Boolean(meta.hasSyncTex);
         notify();
         return;
       }
+      if (pendingLoad?.url === url) return;
       const serial = ++loadSerial;
-      loadingUrl = url || null;
-      const preserveScroll = Boolean(meta.preserveScroll && currentPath && currentPath === meta.path);
+      const anchor = meta.preserveScroll && currentPath === meta.path ? scrollAnchor() : null;
+      resetDoc();
+      const loading = { url, controller: new AbortController(), task: null, anchor };
+      pendingLoad = loading;
       if (statusEl) {
         statusEl.textContent = meta.loadingText || "";
         statusEl.classList.toggle("hidden", !meta.loadingText);
       }
+      updateToolbar();
       try {
         const pdfjsLib = await loadPdfJs();
         if (serial !== loadSerial) return;
-        const response = await fetch(url, { cache: "no-store" });
+        const response = await fetch(url, { cache: "no-store", signal: loading.controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const buffer = await response.arrayBuffer();
         if (serial !== loadSerial) return;
-        const prevDoc = pdfDoc;
-        const loadingTask = pdfjsLib.getDocument({
+        loading.task = pdfjsLib.getDocument({
           data: new Uint8Array(buffer),
           isEvalSupported: false,
         });
-        const nextDoc = await loadingTask.promise;
-        if (serial !== loadSerial) {
-          try { await nextDoc.destroy(); } catch {}
-          return;
-        }
+        const nextDoc = await loading.task.promise;
+        if (serial !== loadSerial) return;
+        const firstPage = await nextDoc.getPage(1);
+        if (serial !== loadSerial) return;
+        pageMeta = [firstPage.getViewport({ scale: 1 })];
         pdfDoc = nextDoc;
-        loadingUrl = null;
+        pendingLoad = null;
         currentUrl = url || null;
-        pageMeta = [];
         currentPath = meta.path || null;
         currentTitle = meta.title || "";
         hasSyncTex = Boolean(meta.hasSyncTex);
-        if (prevDoc) {
-          try { await prevDoc.destroy(); } catch {}
-        }
-        if (!preserveScroll) currentPage = 1;
-        else currentPage = Math.min(currentPage, pdfDoc.numPages);
         if (statusEl) {
           statusEl.textContent = "";
           statusEl.classList.add("hidden");
         }
-        await buildLayout(preserveScroll);
+        buildLayout(loading.anchor);
       } catch (err) {
         if (serial !== loadSerial) return;
         resetDoc();
@@ -474,9 +468,12 @@
 
     function setZoom(nextScale) {
       if (!pdfDoc) return;
+      const next = Math.min(3.0, Math.max(0.4, Math.round(nextScale * 100) / 100));
+      if (!fitMode && next === scale) return;
+      const anchor = scrollAnchor();
       fitMode = false;
-      scale = Math.min(3.0, Math.max(0.4, Math.round(nextScale * 100) / 100));
-      buildLayout(true);
+      scale = next;
+      buildLayout(anchor);
     }
 
     function zoomIn() {
@@ -490,27 +487,34 @@
     function fitWidth() {
       if (!pdfDoc) return;
       fitMode = true;
-      buildLayout(true);
+      buildLayout(scrollAnchor());
     }
 
     function renderHighlightBoxes(pageNum, boxes) {
       if (!pdfDoc || !pageSlots.length) return null;
-      const slot = pageSlots[Math.max(0, Math.min(pageSlots.length - 1, pageNum - 1))];
+      const slot = pageSlots[pageNum - 1];
       if (!slot) return null;
-      for (const s of pageSlots) s.syncLayer.replaceChildren();
+      highlightSlot?.syncLayer?.replaceChildren();
+      highlightSlot = slot;
+      if (!slot.syncLayer) {
+        slot.syncLayer = document.createElement("div");
+        slot.syncLayer.className = "pdf-synctex-layer";
+        slot.wrap.appendChild(slot.syncLayer);
+      }
 
       const list = Array.isArray(boxes) && boxes.length
         ? boxes
-        : [{ x: 36, y: 36, width: slot.widthPt - 72, height: 18 }];
+        : [{ x: 36, y: 36, width: (pageMeta[pageNum - 1] ?? pageMeta[0]).width - 72, height: 18 }];
       let firstCssTop = 0;
-      const vp = slot.viewport;
+      let firstCssLeft = 0;
+      const vp = pageMeta[pageNum - 1]?.clone({ scale });
       const hasVpTransform = vp && typeof vp.convertToViewportRectangle === "function" && Array.isArray(vp.viewBox);
 
       list.forEach((box, idx) => {
-        let left = box.x * slot.scale;
-        let top = box.y * slot.scale;
-        let width = box.width * slot.scale;
-        let height = box.height * slot.scale;
+        let left = box.x * scale;
+        let top = box.y * scale;
+        let width = box.width * scale;
+        let height = box.height * scale;
         if (hasVpTransform) {
           try {
             const vb = vp.viewBox;
@@ -527,7 +531,10 @@
             }
           } catch {}
         }
-        if (idx === 0) firstCssTop = top;
+        if (idx === 0) {
+          firstCssTop = top;
+          firstCssLeft = left;
+        }
         const el = document.createElement("div");
         el.className = "pdf-synctex-box";
         el.style.left = `${Math.max(0, left)}px`;
@@ -536,26 +543,29 @@
         el.style.height = `${Math.max(12, height)}px`;
         slot.syncLayer.appendChild(el);
       });
-      return { slot, firstCssTop };
+      return { slot, firstCssTop, firstCssLeft };
+    }
+
+    function revealHighlight(rendered, behavior) {
+      const { slot, firstCssTop, firstCssLeft } = rendered;
+      const targetTop = slot.wrap.offsetTop + firstCssTop - viewportEl.clientHeight * 0.35;
+      const targetLeft = slot.wrap.offsetLeft + firstCssLeft;
+      const left = targetLeft < viewportEl.scrollLeft || targetLeft > viewportEl.scrollLeft + viewportEl.clientWidth - 36
+        ? Math.max(0, targetLeft - 36)
+        : viewportEl.scrollLeft;
+      viewportEl.scrollTo({ top: Math.max(0, targetTop), left, behavior });
+      currentPage = slot.pageNum;
+      updateToolbar();
     }
 
     function highlight(pageNum, boxes) {
-      clearTimeout(highlightTimer);
       const rendered = renderHighlightBoxes(pageNum, boxes);
       if (!rendered) return false;
-      const { slot, firstCssTop } = rendered;
-      renderSlot(slot, loadSerial, layoutSerial);
-
-      const targetTop = slot.wrap.offsetTop + firstCssTop - viewportEl.clientHeight * 0.35;
-      viewportEl.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
-      currentPage = slot.pageNum;
-      updateToolbar();
-
+      clearTimeout(highlightTimer);
       activeHighlight = { pageNum, boxes, expiresAt: Date.now() + 2600 };
-      highlightTimer = setTimeout(() => {
-        activeHighlight = null;
-        for (const s of pageSlots) s.syncLayer.replaceChildren();
-      }, 2600);
+      highlightTimer = setTimeout(clearHighlights, 2600);
+      revealHighlight(rendered, "instant");
+      renderSlot(rendered.slot, loadSerial, layoutSerial);
       return true;
     }
 

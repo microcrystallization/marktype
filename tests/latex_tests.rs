@@ -122,3 +122,24 @@ fn latexmk_runs_biber_for_biblatex_projects() {
     );
     assert!(result.pdf.unwrap().is_file());
 }
+
+#[test]
+fn latexmk_compiles_includes_more_than_eight_directories_deep() {
+    if std::env::var("MARKTYPE_TEST_TEX_ENGINE").as_deref() != Ok("pdf") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("Deep paper");
+    project(&directory);
+    let chapter = "sections/a/b/c/d/e/f/g/h/i/results";
+    let target = directory.join(chapter).with_extension("tex");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::rename(directory.join("sections/results.tex"), target).unwrap();
+    let main = directory.join("main.tex");
+    let source = fs::read_to_string(&main).unwrap();
+    fs::write(&main, source.replace("sections/results", chapter)).unwrap();
+    let result = Build::prepare(main, Engine::Pdf).unwrap().run(|_| {});
+    assert!(result.error.is_none(), "{:?}\n{}", result.error, result.log);
+    assert!(result.pdf.unwrap().is_file());
+    assert!(result.synctex);
+}

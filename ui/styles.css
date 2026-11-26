@@ -999,9 +999,13 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
   flex-direction: column;
   align-items: center;
   gap: 16px;
+  width: max-content;
+  min-width: 100%;
 }
 .pdf-page-wrap {
   position: relative;
+  width: calc(var(--pdf-page-width, var(--pdf-default-width)) * var(--pdf-scale));
+  height: calc(var(--pdf-page-height, var(--pdf-default-height)) * var(--pdf-scale));
   background: #ffffff;
   border-radius: 4px;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);

@@ -1445,12 +1445,14 @@ dependencies = [
  "regex",
  "rfd",
  "ropey",
+ "rustix",
  "serde",
  "serde_json",
  "tao",
  "tempfile",
  "trash",
  "unicase",
+ "windows-sys 0.61.2",
  "wry",
 ]
 

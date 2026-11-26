@@ -405,25 +405,10 @@ fn prepare_output_directories(project: &Path, output: &Path) -> io::Result<()> {
     let walker = ignore::WalkBuilder::new(project)
         .standard_filters(false)
         .follow_links(false)
-        .max_depth(Some(8))
-        .filter_entry(move |entry| {
-            let name = entry.file_name();
-            name != ".git"
-                && name != "node_modules"
-                && name != "target"
-                && name != ".venv"
-                && name != ".hg"
-                && name != ".svn"
-                && entry.path() != staging
-        })
+        .filter_entry(move |entry| entry.file_name() != ".git" && entry.path() != staging)
         .build();
-    let mut created = 0usize;
     for entry in walker.filter_map(Result::ok) {
         if entry.depth() != 0 && entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            created += 1;
-            if created > 512 {
-                break;
-            }
             let relative = entry
                 .path()
                 .strip_prefix(project)
@@ -465,24 +450,43 @@ pub struct BuildResult {
 fn copy_synctex(output: &Path, main: &Path) -> io::Result<bool> {
     let gz_target = crate::synctex::with_synctex_extension(main, "synctex.gz");
     let plain_target = crate::synctex::with_synctex_extension(main, "synctex");
-    for (ext, target, stale) in [
-        ("synctex.gz", &gz_target, &plain_target),
-        ("synctex", &plain_target, &gz_target),
-    ] {
+    for (target, stale) in [(&gz_target, &plain_target), (&plain_target, &gz_target)] {
         let Some(file_name) = target.file_name() else {
             continue;
         };
         let produced = output.join(file_name);
         if produced.is_file() {
-            let mut source = File::open(&produced)?;
-            storage::atomic_write(target, |file| io::copy(&mut source, file).map(|_| ()))?;
+            let result = File::open(produced).and_then(|mut source| {
+                storage::atomic_write(target, |file| io::copy(&mut source, file).map(|_| ()))
+            });
             let _ = std::fs::remove_file(stale);
-            let _ = ext;
-            return Ok(true);
+            if result.is_err() {
+                let _ = std::fs::remove_file(target);
+            }
+            return result.map(|()| true);
         }
     }
     // Remove stale SyncTeX files if this build produced none.
     let _ = std::fs::remove_file(&gz_target);
     let _ = std::fs::remove_file(&plain_target);
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepares_deep_includes_in_large_projects() {
+        let project = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let deep = Path::new("sections/a/b/c/d/e/f/g/h/i/j");
+        std::fs::create_dir_all(project.path().join(deep)).unwrap();
+        for i in 0..520 {
+            std::fs::create_dir(project.path().join(format!("chapter-{i}"))).unwrap();
+        }
+        prepare_output_directories(project.path(), output.path()).unwrap();
+        assert!(output.path().join(deep).is_dir());
+        assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 521);
+    }
 }

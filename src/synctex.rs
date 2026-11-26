@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -103,6 +104,8 @@ struct InputFile {
 pub struct SyncTex {
     inputs: HashMap<u32, InputFile>,
     nodes: Vec<Node>,
+    by_page: HashMap<u32, Range<usize>>,
+    by_source: Vec<u32>,
 }
 
 impl SyncTex {
@@ -324,7 +327,31 @@ impl SyncTex {
         if inputs.is_empty() && nodes.is_empty() {
             return Err("SyncTeX file contains no synchronization records.".into());
         }
-        Ok(Self { inputs, nodes })
+        if !nodes.is_sorted_by_key(|node| node.page) {
+            nodes.sort_by_key(|node| node.page);
+        }
+        let mut by_page = HashMap::new();
+        let mut offset = 0;
+        for page in nodes.chunk_by(|left, right| left.page == right.page) {
+            by_page.insert(page[0].page, offset..offset + page.len());
+            offset += page.len();
+        }
+        let mut by_source = Vec::with_capacity(nodes.len());
+        for (index, node) in (0u32..).zip(&nodes) {
+            if node.line > 0 {
+                by_source.push(index);
+            }
+        }
+        by_source.sort_unstable_by_key(|&index| {
+            let node = &nodes[index as usize];
+            (node.tag, node.line, index)
+        });
+        Ok(Self {
+            inputs,
+            nodes,
+            by_page,
+            by_source,
+        })
     }
 
     /// Map a source file path and 1-based line number to PDF page and highlight boxes.
@@ -335,36 +362,45 @@ impl SyncTex {
             return None;
         }
 
-        let mut exact: Vec<&Node> = self
-            .nodes
+        let key = |index: u32| {
+            let node = &self.nodes[index as usize];
+            (node.tag, node.line)
+        };
+        let lower_bound = |tag, line| {
+            self.by_source
+                .partition_point(|&index| key(index) < (tag, line))
+        };
+        let best_line = tags
             .iter()
-            .filter(|node| tags.contains(&node.tag) && node.line == line)
-            .collect();
-
-        if exact.is_empty() {
-            let best_line = self
-                .nodes
-                .iter()
-                .filter(|node| tags.contains(&node.tag) && node.line > 0)
-                .map(|node| node.line)
-                .min_by_key(|&candidate| {
-                    let dist = candidate.abs_diff(line);
-                    let after_bias = u32::from(candidate < line);
-                    (dist, after_bias)
-                })?;
-            if best_line.abs_diff(line) > 80 {
-                return None;
-            }
-            exact = self
-                .nodes
-                .iter()
-                .filter(|node| tags.contains(&node.tag) && node.line == best_line)
-                .collect();
-        }
-
-        if exact.is_empty() {
+            .flat_map(|&tag| {
+                let next = lower_bound(tag, line);
+                [next.checked_sub(1), Some(next)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |i| {
+                        let (found_tag, found_line) = key(*self.by_source.get(i)?);
+                        (found_tag == tag).then_some(found_line)
+                    })
+            })
+            .min_by_key(|&candidate| (candidate.abs_diff(line), candidate < line))?;
+        if best_line.abs_diff(line) > 80 {
             return None;
         }
+
+        let mut exact = Vec::new();
+        for tag in tags {
+            exact.extend(
+                self.by_source[lower_bound(tag, best_line)..]
+                    .iter()
+                    .copied()
+                    .take_while(|&index| key(index) == (tag, best_line)),
+            );
+        }
+        exact.sort_unstable();
+        let exact: Vec<&Node> = exact
+            .into_iter()
+            .map(|index| &self.nodes[index as usize])
+            .collect();
 
         // Prefer HBox nodes, then Leaf nodes, and only fall back to VBox.
         let hboxes: Vec<&Node> = exact
@@ -413,11 +449,10 @@ impl SyncTex {
         let mut best_enclosing: Option<(&Node, &InputFile, bool, u8, f64)> = None;
         let mut best_nearest: Option<(&Node, &InputFile, bool, f64)> = None;
 
-        for node in self
-            .nodes
-            .iter()
-            .filter(|node| node.page == page && node.line > 0)
-        {
+        for node in &self.nodes[self.by_page.get(&page)?.clone()] {
+            if node.line == 0 {
+                continue;
+            }
             let Some(input) = self.inputs.get(&node.tag) else {
                 continue;
             };
