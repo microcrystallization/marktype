@@ -33,11 +33,19 @@ enum UserEvent {
     NativeMenu(String),
 }
 
+type SyncTexStamp = Option<(Option<std::time::SystemTime>, u64)>;
+
 #[derive(Default)]
 struct LatexJob {
     running: bool,
     pdf: Option<PathBuf>,
-    synctex: Option<(PathBuf, SyncTex)>,
+    synctex: Option<(PathBuf, SyncTexStamp, SyncTex)>,
+}
+
+fn synctex_file_stamp(pdf: &std::path::Path) -> SyncTexStamp {
+    let path = synctex::synctex_path_for_pdf(pdf)?;
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok(), meta.len()))
 }
 
 impl LatexJob {
@@ -47,40 +55,76 @@ impl LatexJob {
         force_reload: bool,
     ) -> Result<&SyncTex, String> {
         let canonical = dunce::canonicalize(pdf).unwrap_or_else(|_| pdf.to_path_buf());
+        let current_stamp = synctex_file_stamp(&canonical);
         let cached = !force_reload
             && self
                 .synctex
                 .as_ref()
-                .is_some_and(|(cached_path, _)| *cached_path == canonical);
+                .is_some_and(|(cached_path, cached_stamp, _)| {
+                    *cached_path == canonical && *cached_stamp == current_stamp
+                });
         if !cached {
+            if force_reload {
+                self.synctex = None;
+            }
             let parsed = SyncTex::load_for_pdf(&canonical)?;
-            self.synctex = Some((canonical, parsed));
+            self.synctex = Some((canonical, current_stamp, parsed));
         }
-        Ok(&self.synctex.as_ref().expect("SyncTeX cached").1)
+        Ok(&self.synctex.as_ref().expect("SyncTeX cached").2)
     }
 
     fn resolve_pdf_path(&self, state: &AppState, values: &serde_json::Value) -> Option<PathBuf> {
-        if let Some(pdf) = values["pdf"].as_str().filter(|s| !s.is_empty()) {
-            let path = PathBuf::from(pdf);
-            if path.is_file() {
-                return Some(path);
+        let is_allowed_pdf = |candidate: &std::path::Path| -> Option<PathBuf> {
+            let canonical = dunce::canonicalize(candidate).ok()?;
+            if !canonical.is_file()
+                || !canonical
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            {
+                return None;
             }
+            if self
+                .pdf
+                .as_deref()
+                .and_then(|p| dunce::canonicalize(p).ok())
+                .is_some_and(|p| p == canonical)
+                || assets::is_registered_pdf(&canonical)
+                || state
+                    .folder_root
+                    .as_deref()
+                    .and_then(|root| dunce::canonicalize(root).ok())
+                    .is_some_and(|root| canonical.starts_with(&root))
+                || state.docs.iter().any(|doc| {
+                    doc.path
+                        .as_deref()
+                        .and_then(|p| latex::detect_root(p, state.folder_root.as_deref()))
+                        .and_then(|root| dunce::canonicalize(root.with_extension("pdf")).ok())
+                        .is_some_and(|pdf| pdf == canonical)
+                })
+            {
+                return Some(canonical);
+            }
+            None
+        };
+
+        if let Some(pdf) = values["pdf"].as_str().filter(|s| !s.is_empty())
+            && let Some(allowed) = is_allowed_pdf(std::path::Path::new(pdf))
+        {
+            return Some(allowed);
         }
-        if let Some(main) = values["main"].as_str().filter(|s| !s.is_empty()) {
-            let path = PathBuf::from(main).with_extension("pdf");
-            if path.is_file() {
-                return Some(path);
-            }
+        if let Some(main) = values["main"].as_str().filter(|s| !s.is_empty())
+            && let Some(allowed) = is_allowed_pdf(&PathBuf::from(main).with_extension("pdf"))
+        {
+            return Some(allowed);
         }
         if let Some(main) = state
             .active_doc()
             .and_then(|doc| doc.path.as_deref())
             .and_then(|path| latex::detect_root(path, state.folder_root.as_deref()))
+            && let Some(allowed) = is_allowed_pdf(&main.with_extension("pdf"))
         {
-            let path = main.with_extension("pdf");
-            if path.is_file() {
-                return Some(path);
-            }
+            return Some(allowed);
         }
         self.pdf.clone().filter(|path| path.is_file())
     }
@@ -490,8 +534,22 @@ fn main() {
                                     dispatch_json(&webview, &serde_json::json!({"event":"latexStarted","main":build.main,
                                         "compiler":build.compiler(),"tabs":state.tab_summaries()}));
                                     let proxy = proxy_latex.clone();
+                                    let main_for_panic = build.main.clone();
+                                    let compiler_for_panic = build.compiler();
                                     std::thread::spawn(move || {
-                                        let result = build.run(|log| { let _ = proxy.send_event(UserEvent::LatexProgress(log)); });
+                                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            build.run(|log| {
+                                                let _ = proxy.send_event(UserEvent::LatexProgress(log));
+                                            })
+                                        }));
+                                        let result = outcome.unwrap_or_else(|_| latex::BuildResult {
+                                            main: main_for_panic,
+                                            compiler: compiler_for_panic,
+                                            pdf: None,
+                                            synctex: false,
+                                            log: String::new(),
+                                            error: Some("LaTeX compiler worker terminated unexpectedly.".into()),
+                                        });
                                         let _ = proxy.send_event(UserEvent::LatexBuilt(result));
                                     });
                                 }
@@ -505,7 +563,13 @@ fn main() {
                                 .as_str()
                                 .filter(|s| !s.is_empty())
                                 .map(PathBuf::from)
-                                .or_else(|| latex_job.pdf.clone());
+                                .filter(|path| assets::is_registered_pdf(path))
+                                .or_else(|| {
+                                    latex_job
+                                        .pdf
+                                        .clone()
+                                        .filter(|path| assets::is_registered_pdf(path) || path.is_file())
+                                });
                             if let Some(path) = target && let Err(error) = open::that_detached(&path) {
                                 dispatch_json(&webview, &serde_json::json!({"event":"toast","message":format!("Cannot open PDF: {error}")}));
                             }
@@ -527,8 +591,7 @@ fn main() {
                                 return;
                             };
                             latex_job.pdf = Some(pdf.clone());
-                            let has_synctex = latex_job.load_synctex(&pdf, true).is_ok()
-                                || synctex::synctex_path_for_pdf(&pdf).is_some();
+                            let has_synctex = latex_job.load_synctex(&pdf, true).is_ok();
                             let title = pdf
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
@@ -563,7 +626,7 @@ fn main() {
                                 }));
                                 return;
                             };
-                            let line = v["line"].as_u64().unwrap_or(1).max(1) as u32;
+                            let line = v["line"].as_u64().unwrap_or(1).clamp(1, u64::from(u32::MAX)) as u32;
                             let response = match latex_job.load_synctex(&pdf, false) {
                                 Ok(st) => match st.forward(&file, line) {
                                     Some(hit) => serde_json::json!({
@@ -592,7 +655,7 @@ fn main() {
                                 }));
                                 return;
                             };
-                            let page = v["page"].as_u64().unwrap_or(1).max(1) as u32;
+                            let page = v["page"].as_u64().unwrap_or(1).clamp(1, u64::from(u32::MAX)) as u32;
                             let x = v["x"].as_f64().unwrap_or(0.0);
                             let y = v["y"].as_f64().unwrap_or(0.0);
                             let hit = match latex_job.load_synctex(&pdf, false) {
@@ -601,25 +664,53 @@ fn main() {
                                 }),
                                 Err(error) => Err(error),
                             };
+                            let pdf_dir = pdf.parent().and_then(|p| dunce::canonicalize(p).ok());
+                            let ws_dir = state
+                                .folder_root
+                                .as_deref()
+                                .and_then(|p| dunce::canonicalize(p).ok());
                             match hit {
                                 Ok(target) if target.path.is_file() => {
+                                    let target_canonical =
+                                        dunce::canonicalize(&target.path).unwrap_or_else(|_| target.path.clone());
+                                    let in_scope = latex::project_source(&target_canonical)
+                                        && (pdf_dir.as_deref().is_some_and(|d| target_canonical.starts_with(d))
+                                            || ws_dir.as_deref().is_some_and(|d| target_canonical.starts_with(d)));
+                                    if !in_scope {
+                                        dispatch_json(&webview, &serde_json::json!({
+                                            "event": "synctexInverseResult",
+                                            "error": "SyncTeX target is outside the LaTeX project folder."
+                                        }));
+                                        return;
+                                    }
                                     let already_active = state
                                         .active_doc()
                                         .and_then(|d| d.path.as_deref())
-                                        .is_some_and(|p| p == target.path.as_path());
-                                    if !already_active && state.open_file_path(&target.path).is_ok() {
-                                        let doc = state.active_doc_snapshot(200);
-                                        dispatch_json(&webview, &serde_json::json!({
-                                            "event": "tabSwitched",
-                                            "tabs": state.tab_summaries(),
-                                            "activeTabId": state.active_doc().map(|d| d.id.clone()),
-                                            "doc": doc,
-                                            "settings": state.settings,
-                                        }));
+                                        .is_some_and(|p| p == target_canonical.as_path());
+                                    if !already_active {
+                                        match state.open_file_path(&target_canonical) {
+                                            Ok(_) => {
+                                                let doc = state.active_doc_snapshot(200);
+                                                dispatch_json(&webview, &serde_json::json!({
+                                                    "event": "tabSwitched",
+                                                    "tabs": state.tab_summaries(),
+                                                    "activeTabId": state.active_doc().map(|d| d.id.clone()),
+                                                    "doc": doc,
+                                                    "settings": state.settings,
+                                                }));
+                                            }
+                                            Err(error) => {
+                                                dispatch_json(&webview, &serde_json::json!({
+                                                    "event": "synctexInverseResult",
+                                                    "error": error,
+                                                }));
+                                                return;
+                                            }
+                                        }
                                     }
                                     dispatch_json(&webview, &serde_json::json!({
                                         "event": "synctexInverseResult",
-                                        "path": target.path,
+                                        "path": target_canonical,
                                         "line": target.line,
                                         "column": target.column,
                                     }));
@@ -726,10 +817,17 @@ fn main() {
             #[cfg(target_os = "macos")]
             Event::Opened { urls } => {
                 for path in urls.iter().filter_map(|url| url.to_file_path().ok()) {
-                    let response = state.handle_command(&serde_json::json!({
-                        "cmd": "openPath", "path": path
-                    }).to_string());
-                    handle_response(&webview, control_flow, &response);
+                    if state.open_file_path(&path).is_ok() {
+                        let doc = state.active_doc_snapshot(200);
+                        let payload = serde_json::json!({
+                            "event": "tabSwitched",
+                            "tabs": state.tab_summaries(),
+                            "activeTabId": state.active_doc().map(|d| d.id.clone()),
+                            "doc": doc,
+                            "settings": state.settings,
+                        });
+                        dispatch_json(&webview, &payload);
+                    }
                 }
             }
             Event::UserEvent(UserEvent::WorkspaceResults(response)) => {
@@ -742,7 +840,7 @@ fn main() {
                 let (pdf_url, has_synctex) = if let Some(ref pdf) = result.pdf {
                     latex_job.pdf = Some(pdf.clone());
                     let url = assets::register_pdf(pdf);
-                    let st = latex_job.load_synctex(pdf, true).is_ok() || result.synctex;
+                    let st = latex_job.load_synctex(pdf, true).is_ok();
                     (url, st)
                 } else {
                     (None, false)

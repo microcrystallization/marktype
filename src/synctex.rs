@@ -10,6 +10,10 @@ use serde::Serialize;
 
 /// Scaled points per PDF Big Point (bp): 65536 * 72.27 / 72.0.
 const SP_PER_BP: f64 = 65_781.76;
+/// Upper bound on decompressed SyncTeX payload size to guard against gzip bombs.
+const MAX_SYNCTEX_BYTES: u64 = 64 * 1024 * 1024;
+/// Upper bound on parsed SyncTeX nodes to bound memory usage.
+const MAX_SYNCTEX_NODES: usize = 1_500_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NodeKind {
@@ -92,11 +96,11 @@ struct InputFile {
     path: PathBuf,
     normalized: String,
     is_project_source: bool,
+    exists: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct SyncTex {
-    base_dir: PathBuf,
     inputs: HashMap<u32, InputFile>,
     nodes: Vec<Node>,
 }
@@ -132,14 +136,16 @@ impl SyncTex {
         let mut magnification: i64 = 1000;
         let mut x_offset: i64 = 0;
         let mut y_offset: i64 = 0;
-        let mut scale = 1.0 / SP_PER_BP;
+        let mut base_scale = 1.0 / SP_PER_BP;
+        let mut coord_scale = 1.0 / SP_PER_BP;
         let mut in_content = false;
         let mut current_page: u32 = 0;
         let mut prev_h: i64 = 0;
         let mut prev_v: i64 = 0;
         let mut box_stack: Vec<(f64, f64)> = Vec::new(); // (height_pt, depth_pt)
 
-        let mut buf_reader = BufReader::new(reader);
+        let mut buf_reader = BufReader::new(reader.take(MAX_SYNCTEX_BYTES + 1));
+        let mut total_read: u64 = 0;
         let mut raw_line = Vec::new();
         loop {
             raw_line.clear();
@@ -149,36 +155,48 @@ impl SyncTex {
             if read == 0 {
                 break;
             }
+            total_read += read as u64;
+            if total_read > MAX_SYNCTEX_BYTES {
+                return Err("SyncTeX file exceeds the 64 MiB safety limit.".into());
+            }
             let line = String::from_utf8_lossy(&raw_line);
             let line = line.trim_end_matches(['\r', '\n']);
             if line.is_empty() {
                 continue;
             }
 
+            // TeX engines emit `Input:` lazily both in the preamble and inside `Content:`
+            // when chapters are `\input` or `\include`d after earlier pages ship out.
+            if let Some(rest) = line.strip_prefix("Input:") {
+                if let Some((tag_str, path_str)) = rest.split_once(':')
+                    && let Ok(tag) = tag_str.parse::<u32>()
+                {
+                    let resolved = resolve_input_path(&base_dir, path_str);
+                    let normalized = normalize_key(&resolved);
+                    let exists = resolved.is_file();
+                    let is_project_source =
+                        resolved.starts_with(&base_dir) && crate::latex::project_source(&resolved);
+                    inputs.insert(
+                        tag,
+                        InputFile {
+                            path: resolved,
+                            normalized,
+                            is_project_source,
+                            exists,
+                        },
+                    );
+                }
+                continue;
+            }
+
             if !in_content {
                 if line == "Content:" {
                     in_content = true;
-                    scale = (unit as f64) * (magnification as f64) / 1000.0 / SP_PER_BP;
+                    base_scale = (magnification as f64) / 1000.0 / SP_PER_BP;
+                    coord_scale = (unit as f64) * base_scale;
                     continue;
                 }
-                if let Some(rest) = line.strip_prefix("Input:") {
-                    if let Some((tag_str, path_str)) = rest.split_once(':')
-                        && let Ok(tag) = tag_str.parse::<u32>()
-                    {
-                        let resolved = resolve_input_path(&base_dir, path_str);
-                        let normalized = normalize_key(&resolved);
-                        let is_project_source = resolved.starts_with(&base_dir)
-                            || crate::latex::project_source(&resolved);
-                        inputs.insert(
-                            tag,
-                            InputFile {
-                                path: resolved,
-                                normalized,
-                                is_project_source,
-                            },
-                        );
-                    }
-                } else if let Some(val) = line.strip_prefix("Unit:") {
+                if let Some(val) = line.strip_prefix("Unit:") {
                     if let Ok(parsed) = val.trim().parse::<i64>()
                         && parsed > 0
                     {
@@ -230,11 +248,16 @@ impl SyncTex {
                     if let Some((tag, src_line, col, h, v, w, height, depth)) =
                         parse_box_record(rest, &mut prev_h, &mut prev_v)
                     {
-                        let x = (h + x_offset) as f64 * scale;
-                        let h_pt = (height.max(0) as f64) * scale;
-                        let d_pt = (depth.max(0) as f64) * scale;
-                        let y = ((v + y_offset) as f64) * scale - h_pt;
-                        let width = (w.max(0) as f64) * scale;
+                        let x_raw = (h as f64) * coord_scale + (x_offset as f64) * base_scale;
+                        let h_pt = (height.max(0) as f64) * coord_scale;
+                        let d_pt = (depth.max(0) as f64) * coord_scale;
+                        let y = (v as f64) * coord_scale + (y_offset as f64) * base_scale - h_pt;
+                        let w_pt = (w as f64) * coord_scale;
+                        let (x, width) = if w_pt < 0.0 {
+                            ((x_raw + w_pt).max(0.0), -w_pt)
+                        } else {
+                            (x_raw, w_pt)
+                        };
                         let total_height = (h_pt + d_pt).max(1.0);
                         if matches!(prefix, '[' | '(') {
                             box_stack.push((h_pt, d_pt));
@@ -244,17 +267,21 @@ impl SyncTex {
                             '(' => NodeKind::HBox,
                             _ => NodeKind::Leaf,
                         };
-                        nodes.push(Node {
-                            kind,
-                            tag,
-                            line: src_line,
-                            column: col,
-                            page: current_page,
-                            x,
-                            y,
-                            width,
-                            height: total_height,
-                        });
+                        if nodes.len() < MAX_SYNCTEX_NODES {
+                            nodes.push(Node {
+                                kind,
+                                tag,
+                                line: src_line,
+                                column: col,
+                                page: current_page,
+                                x,
+                                y,
+                                width,
+                                height: total_height,
+                            });
+                        }
+                    } else if matches!(prefix, '[' | '(') {
+                        box_stack.push((9.0, 2.5));
                     }
                 }
                 'x' | 'g' | '$' | 'k' if current_page > 0 => {
@@ -262,29 +289,32 @@ impl SyncTex {
                         parse_point_record(rest, &mut prev_h, &mut prev_v)
                     {
                         let (h_pt, d_pt) = box_stack.last().copied().unwrap_or((9.0, 2.5));
-                        let width = w_opt
-                            .map(|w| (w.max(0) as f64) * scale)
-                            .unwrap_or(0.0)
-                            .max(12.0);
-                        let raw_x = (h + x_offset) as f64 * scale;
-                        let x = if prefix == 'k' {
-                            (raw_x - width).max(0.0)
+                        let raw_x = (h as f64) * coord_scale + (x_offset as f64) * base_scale;
+                        let raw_w = w_opt.map(|w| (w as f64) * coord_scale).unwrap_or(0.0);
+                        let (x, width) = if prefix == 'k' {
+                            if raw_w >= 0.0 {
+                                ((raw_x - raw_w).max(0.0), raw_w.max(12.0))
+                            } else {
+                                (raw_x.max(0.0), (-raw_w).max(12.0))
+                            }
                         } else {
-                            raw_x
+                            (raw_x.max(0.0), raw_w.abs().max(12.0))
                         };
-                        let y = ((v + y_offset) as f64) * scale - h_pt;
+                        let y = (v as f64) * coord_scale + (y_offset as f64) * base_scale - h_pt;
                         let total_height = (h_pt + d_pt).max(10.0);
-                        nodes.push(Node {
-                            kind: NodeKind::Leaf,
-                            tag,
-                            line: src_line,
-                            column: col,
-                            page: current_page,
-                            x,
-                            y,
-                            width,
-                            height: total_height,
-                        });
+                        if nodes.len() < MAX_SYNCTEX_NODES {
+                            nodes.push(Node {
+                                kind: NodeKind::Leaf,
+                                tag,
+                                line: src_line,
+                                column: col,
+                                page: current_page,
+                                x,
+                                y,
+                                width,
+                                height: total_height,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -294,11 +324,7 @@ impl SyncTex {
         if inputs.is_empty() && nodes.is_empty() {
             return Err("SyncTeX file contains no synchronization records.".into());
         }
-        Ok(Self {
-            base_dir,
-            inputs,
-            nodes,
-        })
+        Ok(Self { inputs, nodes })
     }
 
     /// Map a source file path and 1-based line number to PDF page and highlight boxes.
@@ -395,7 +421,7 @@ impl SyncTex {
             let Some(input) = self.inputs.get(&node.tag) else {
                 continue;
             };
-            let is_local = input.is_project_source && input.path.is_file();
+            let is_local = input.is_project_source && input.exists;
             let kind_rank = match node.kind {
                 NodeKind::Leaf => 0u8,
                 NodeKind::HBox => 1u8,
@@ -450,25 +476,11 @@ impl SyncTex {
         let canonical =
             dunce::canonicalize(source_path).unwrap_or_else(|_| clean_path(source_path));
         let key = normalize_key(&canonical);
-        let mut tags: Vec<u32> = self
-            .inputs
+        self.inputs
             .iter()
             .filter(|(_, input)| input.normalized == key)
             .map(|(&tag, _)| tag)
-            .collect();
-
-        if tags.is_empty()
-            && let Ok(rel) = canonical.strip_prefix(&self.base_dir)
-        {
-            let rel_key = normalize_key(&self.base_dir.join(rel));
-            tags = self
-                .inputs
-                .iter()
-                .filter(|(_, input)| input.normalized == rel_key)
-                .map(|(&tag, _)| tag)
-                .collect();
-        }
-        tags
+            .collect()
     }
 }
 

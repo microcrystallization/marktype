@@ -305,8 +305,10 @@ impl AppState {
             }
         }
         if !recovered.is_empty() && self.persist_session(true).is_ok() {
-            for (candidate, _lease) in recovered {
-                let _ = std::fs::remove_file(candidate);
+            for (candidate, lease) in recovered {
+                drop(lease);
+                let _ = std::fs::remove_file(&candidate);
+                let _ = std::fs::remove_file(candidate.with_extension("lock"));
             }
         }
     }
@@ -744,7 +746,12 @@ impl AppState {
                         path.is_file(),
                     )?;
                     if target != path {
-                        if std::fs::symlink_metadata(&target).is_ok() {
+                        let same_case_insensitive =
+                            cfg!(any(target_os = "windows", target_os = "macos"))
+                                && target
+                                    .to_string_lossy()
+                                    .eq_ignore_ascii_case(&path.to_string_lossy());
+                        if !same_case_insensitive && std::fs::symlink_metadata(&target).is_ok() {
                             return Err("An item already has that name".into());
                         }
                         std::fs::rename(&path, &target)
@@ -1108,13 +1115,13 @@ impl AppState {
                 defer_preview,
             } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 let Ok(base_offset) = doc.rope.try_line_to_char(base_line) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 if start_char > end_char {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 }
                 let offset = |relative| {
                     if utf16 {
@@ -1131,7 +1138,7 @@ impl AppState {
                     }
                 };
                 let (Some(start), Some(end)) = (offset(start_char), offset(end_char)) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 let defer_preview = defer_preview.unwrap_or(utf16);
                 let patch = doc.apply_edit_with_preview(
@@ -1200,7 +1207,7 @@ impl AppState {
                 around_line,
             } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 let start = around_line.map_or(start, |line| {
                     doc.blocks
@@ -1305,6 +1312,26 @@ impl AppState {
 
             IpcCommand::OpenPath { path } => {
                 let p = PathBuf::from(&path);
+                let allowed = dunce::canonicalize(&p).ok().is_some_and(|canonical| {
+                    self.folder_root
+                        .as_deref()
+                        .and_then(|root| dunce::canonicalize(root).ok())
+                        .is_some_and(|root| canonical.starts_with(&root))
+                        || self.docs.iter().any(|d| {
+                            d.path.as_deref() == Some(canonical.as_path())
+                                || d.path.as_deref().and_then(Path::parent).is_some_and(|dir| {
+                                    latex::project_source(&canonical) && canonical.starts_with(dir)
+                                })
+                        })
+                        || self.settings.recent_files.iter().any(|recent| {
+                            dunce::canonicalize(recent)
+                                .ok()
+                                .is_some_and(|r| r == canonical)
+                        })
+                });
+                if !allowed {
+                    return json!({ "event": "toast", "message": "Cannot open file outside the workspace or recent files", "kind": "error" });
+                }
                 let t0 = Instant::now();
                 match self.open_file_path(&p) {
                     Ok(_) => {
@@ -1397,7 +1424,7 @@ impl AppState {
 
             IpcCommand::Print { doc_id } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 json!({ "event": "printDocument", "docId": doc.id, "html": doc.render_full_html() })
             }
@@ -1519,7 +1546,7 @@ impl AppState {
                 use_regex,
             } => {
                 let Some(doc) = self.active_doc_mut().filter(|doc| doc_id == doc.id) else {
-                    return json!({ "event": "noop" });
+                    return resync_response(&doc_id);
                 };
                 let count = doc.replace_all(&query, &replacement, case_sensitive, use_regex);
                 let snap = self.active_doc_snapshot(200);
@@ -1647,7 +1674,17 @@ impl AppState {
             }
 
             IpcCommand::SelectRecentWallpaper { path } => {
-                if Path::new(&path).is_file() {
+                let allowed = self.settings.wallpaper_history.contains(&path)
+                    && settings::config_dir().is_some_and(|cfg| {
+                        let store_root = store::store_dir(&cfg);
+                        dunce::canonicalize(&store_root)
+                            .ok()
+                            .zip(dunce::canonicalize(&path).ok())
+                            .is_some_and(|(root, target)| {
+                                target.starts_with(&root) && target.is_file()
+                            })
+                    });
+                if allowed {
                     gallery::use_picked(&mut self.settings, path);
                     if let Some(cfg) = settings::config_dir() {
                         store::prune(&cfg, &self.settings.wallpaper_history);

@@ -23,8 +23,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
 install -m 755 target/release/marktype "$app/Contents/MacOS/marktype"
 install -m 644 packaging/macos/Info.plist "$app/Contents/Info.plist"
 install -m 644 packaging/macos/MarkType.icns LICENSE NOTICE.md "$app/Contents/Resources/"
-plutil -insert CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
-plutil -insert CFBundleVersion -string "${version%%-*}" "$app/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "${version%%-*}" "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 if [[ -n ${MARKTYPE_MACOS_IDENTITY:-} ]]; then
   codesign --force --options runtime --timestamp --sign "$MARKTYPE_MACOS_IDENTITY" "$app"

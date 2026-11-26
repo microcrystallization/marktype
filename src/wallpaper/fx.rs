@@ -45,13 +45,19 @@ impl Source<'_> {
 /// Apply `effect` to an RGBA image; `light` is the appearance it's drawn in
 /// (effects print on white paper in light mode, black in dark).
 pub fn render(rgba: Vec<u8>, width: u32, height: u32, effect: Effect, light: bool) -> Vec<u8> {
-    if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    let Some(expected) = expected else {
+        return rgba;
+    };
+    if width == 0 || height == 0 || rgba.len() < expected {
         return rgba;
     }
     let src = Source {
         w: width,
         h: height,
-        rgba: &rgba,
+        rgba: &rgba[..expected],
     };
     match effect {
         Effect::None => rgba,

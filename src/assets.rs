@@ -75,6 +75,24 @@ pub fn register_pdf(path: &Path) -> Option<String> {
     Some(format!("/local-pdf/{id}?v={}", pdfs.revision))
 }
 
+pub fn is_registered_pdf(path: &Path) -> bool {
+    let Ok(canonical) = dunce::canonicalize(path) else {
+        return false;
+    };
+    let registered = LOCAL_PDFS
+        .lock()
+        .ok()
+        .is_some_and(|pdfs| pdfs.by_path.contains_key(&canonical));
+    if !registered {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(&canonical) else {
+        return false;
+    };
+    let mut header = [0u8; 5];
+    std::io::Read::read_exact(&mut file, &mut header).is_ok() && &header == b"%PDF-"
+}
+
 fn local_pdf(id: usize) -> Option<Vec<u8>> {
     use std::io::Read;
     let path = LOCAL_PDFS.lock().ok()?.paths.get(id)?.clone();
@@ -114,6 +132,11 @@ pub(crate) fn save_clipboard_image(directory: &Path, encoded: &str) -> Result<St
         _ => return Err("Unsupported clipboard image format".into()),
     };
     let path = directory.join("assets");
+    if let Ok(meta) = std::fs::symlink_metadata(&path)
+        && meta.file_type().is_symlink()
+    {
+        return Err("The assets directory cannot be a symbolic link".into());
+    }
     std::fs::create_dir_all(&path)
         .map_err(|error| format!("Cannot create assets directory: {error}"))?;
     let resolved = dunce::canonicalize(&path)
@@ -148,7 +171,7 @@ pub fn register_picked_image(path: &Path) {
     {
         LOCAL_IMAGES
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .picked
             .insert(path.to_path_buf(), canonical);
     }
@@ -166,7 +189,12 @@ pub(crate) fn image_url(dest: &str, doc_dir: Option<&Path>) -> Option<String> {
     let decoded = percent_decode_str(trimmed).decode_utf8().ok()?;
     let relative = Path::new(decoded.as_ref());
     let path = if relative.is_absolute() {
-        let picked = LOCAL_IMAGES.lock().unwrap().picked.get(relative).cloned();
+        let picked = LOCAL_IMAGES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .picked
+            .get(relative)
+            .cloned();
         if let Some(path) = picked {
             path
         } else {
@@ -181,7 +209,7 @@ pub(crate) fn image_url(dest: &str, doc_dir: Option<&Path>) -> Option<String> {
     if !mime_from_path(&path).starts_with("image/") {
         return None;
     }
-    let mut images = LOCAL_IMAGES.lock().unwrap();
+    let mut images = LOCAL_IMAGES.lock().unwrap_or_else(|e| e.into_inner());
     let id = if let Some(&id) = images.by_path.get(&path) {
         id
     } else {
@@ -400,11 +428,10 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             let file = &path["/wallpaper/cache/".len()..];
             if is_safe_filename(file)
                 && let Some(cfg) = settings::config_dir()
+                && let Some((mime, bytes)) =
+                    read_contained_image(&store::cache_dir(&cfg), file, MAX_LOCAL_IMAGE_BYTES)
             {
-                let target = store::cache_dir(&cfg).join(file);
-                if let Ok(bytes) = std::fs::read(&target) {
-                    return (200, mime_from_path(&target), bytes);
-                }
+                return (200, mime, bytes);
             }
             (404, "text/plain", b"Cached wallpaper not found".to_vec())
         }
@@ -412,11 +439,10 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
             let file = &path["/wallpaper/thumb/".len()..];
             if is_safe_filename(file)
                 && let Some(cfg) = settings::config_dir()
+                && let Some((mime, bytes)) =
+                    read_contained_image(&gallery::thumb_dir(&cfg), file, MAX_LOCAL_IMAGE_BYTES)
             {
-                let target = gallery::thumb_dir(&cfg).join(file);
-                if let Ok(bytes) = std::fs::read(&target) {
-                    return (200, "image/jpeg", bytes);
-                }
+                return (200, mime, bytes);
             }
             (404, "text/plain", b"Thumbnail not found".to_vec())
         }
@@ -437,7 +463,32 @@ pub fn serve_request(uri: &str) -> (u16, &'static str, Vec<u8>) {
 }
 
 fn is_safe_filename(name: &str) -> bool {
-    !name.is_empty() && !name.contains('/') && !name.contains('\\') && !name.contains("..")
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+        && !name.contains("..")
+}
+
+fn read_contained_image(dir: &Path, file: &str, max_bytes: u64) -> Option<(&'static str, Vec<u8>)> {
+    use std::io::Read;
+    let base = dunce::canonicalize(dir).ok()?;
+    let target = dunce::canonicalize(base.join(file)).ok()?;
+    if !target.starts_with(&base) {
+        return None;
+    }
+    let mime = mime_from_path(&target);
+    if !mime.starts_with("image/") {
+        return None;
+    }
+    let handle = std::fs::File::open(&target).ok()?;
+    let metadata = handle.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    handle.take(max_bytes + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max_bytes).then_some((mime, bytes))
 }
 
 fn mime_from_path(path: &Path) -> &'static str {

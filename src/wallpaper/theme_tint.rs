@@ -298,7 +298,13 @@ impl Palette {
         self.code_bg = lean(self.code_bg);
         self.tint = Some(color);
 
-        let surfaces = [self.shell, self.editor_bg, self.preview_bg, self.popup];
+        let surfaces = [
+            self.shell,
+            self.editor_bg,
+            self.preview_bg,
+            self.popup,
+            self.code_bg,
+        ];
         self.text = harden(self.text, &surfaces, TEXT_CONTRAST, None);
         self.muted = harden(self.muted, &surfaces, TEXT_CONTRAST, Some(self.text));
         self.faint = harden(self.faint, &surfaces, FAINT_CONTRAST, Some(self.text));
@@ -371,7 +377,14 @@ impl Palette {
             accent: hex_str(self.accent),
             accent_soft: rgba_str(self.accent, if self.light { 0.14 } else { 0.20 }),
             on_accent: hex_str(self.on_accent),
-            code_bg: rgba_str(self.code_bg, if panel_alpha < 0.99 { 0.82 } else { 1.0 }),
+            code_bg: rgba_str(
+                self.code_bg,
+                if panel_alpha < 0.99 {
+                    panel_alpha.max(0.82)
+                } else {
+                    1.0
+                },
+            ),
             border: self.border_rgba.to_string(),
             hairline: self.hairline_rgba.to_string(),
             row_hover: self.row_hover_rgba,

@@ -87,14 +87,17 @@ pub(crate) fn claim_session(directory: &Path) -> io::Result<(std::path::PathBuf,
     if let Ok(lease) = lock_session(&primary) {
         return Ok((primary, lease));
     }
-    let name = tempfile::Builder::new()
+    let temp = tempfile::Builder::new()
         .prefix("session-extra-")
-        .suffix(".json")
-        .tempfile_in(directory)?
-        .into_temp_path();
-    let path = name.to_path_buf();
-    let lease = lock_session(&path)?;
-    Ok((path, lease))
+        .suffix(".lock")
+        .tempfile_in(directory)?;
+    let (lease, lock_path) = temp.keep().map_err(|error| error.error)?;
+    if let Err(error) = fs2::FileExt::try_lock_exclusive(&lease) {
+        drop(lease);
+        let _ = std::fs::remove_file(&lock_path);
+        return Err(error);
+    }
+    Ok((lock_path.with_extension("json"), lease))
 }
 
 pub(crate) fn atomic_write(
@@ -121,6 +124,25 @@ pub(crate) fn atomic_write_checked(
     }
     temp.as_file().sync_all()?;
     check()?;
+    #[cfg(windows)]
+    {
+        let mut current = temp;
+        let mut attempts = 0u8;
+        loop {
+            match current.persist(path) {
+                Ok(_) => break,
+                Err(error)
+                    if error.error.kind() == io::ErrorKind::PermissionDenied && attempts < 4 =>
+                {
+                    attempts += 1;
+                    current = error.file;
+                    std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempts)));
+                }
+                Err(error) => return Err(error.error),
+            }
+        }
+    }
+    #[cfg(not(windows))]
     temp.persist(path)?;
     Ok(())
 }

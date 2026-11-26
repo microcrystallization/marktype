@@ -193,10 +193,21 @@ impl Build {
         let tectonic = || executable(&paths, "tectonic");
         let (program, engine) = match requested {
             Engine::Tectonic => (tectonic(), Engine::Tectonic),
-            Engine::Auto => match latexmk().filter(|_| executable(&paths, "pdflatex").is_some()) {
-                Some(program) => (Some(program), Engine::Pdf),
-                None => (tectonic(), Engine::Tectonic),
-            },
+            Engine::Auto => {
+                if let Some(lmk) = latexmk() {
+                    if executable(&paths, "pdflatex").is_some() {
+                        (Some(lmk), Engine::Pdf)
+                    } else if executable(&paths, "xelatex").is_some() {
+                        (Some(lmk), Engine::Xe)
+                    } else if executable(&paths, "lualatex").is_some() {
+                        (Some(lmk), Engine::Lua)
+                    } else {
+                        (tectonic(), Engine::Tectonic)
+                    }
+                } else {
+                    (tectonic(), Engine::Tectonic)
+                }
+            }
             engine => (
                 latexmk().filter(|_| executable(&paths, engine.name()).is_some()),
                 engine,
@@ -337,7 +348,7 @@ impl Build {
             }
             compiled.rewind()?;
             storage::atomic_write(&pdf, |file| io::copy(&mut compiled, file).map(|_| ()))?;
-            let synctex = copy_synctex(output, &self.main)?;
+            let synctex = copy_synctex(output, &self.main).unwrap_or(false);
             Ok((pdf.clone(), synctex))
         })();
         // LuaLaTeX can remove a PDF in the project directory even with an explicit output directory.
@@ -394,10 +405,25 @@ fn prepare_output_directories(project: &Path, output: &Path) -> io::Result<()> {
     let walker = ignore::WalkBuilder::new(project)
         .standard_filters(false)
         .follow_links(false)
-        .filter_entry(move |entry| entry.file_name() != ".git" && entry.path() != staging)
+        .max_depth(Some(8))
+        .filter_entry(move |entry| {
+            let name = entry.file_name();
+            name != ".git"
+                && name != "node_modules"
+                && name != "target"
+                && name != ".venv"
+                && name != ".hg"
+                && name != ".svn"
+                && entry.path() != staging
+        })
         .build();
+    let mut created = 0usize;
     for entry in walker.filter_map(Result::ok) {
         if entry.depth() != 0 && entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            created += 1;
+            if created > 512 {
+                break;
+            }
             let relative = entry
                 .path()
                 .strip_prefix(project)
@@ -437,17 +463,26 @@ pub struct BuildResult {
 }
 
 fn copy_synctex(output: &Path, main: &Path) -> io::Result<bool> {
-    for ext in ["synctex.gz", "synctex"] {
-        let target = crate::synctex::with_synctex_extension(main, ext);
+    let gz_target = crate::synctex::with_synctex_extension(main, "synctex.gz");
+    let plain_target = crate::synctex::with_synctex_extension(main, "synctex");
+    for (ext, target, stale) in [
+        ("synctex.gz", &gz_target, &plain_target),
+        ("synctex", &plain_target, &gz_target),
+    ] {
         let Some(file_name) = target.file_name() else {
             continue;
         };
         let produced = output.join(file_name);
         if produced.is_file() {
             let mut source = File::open(&produced)?;
-            storage::atomic_write(&target, |file| io::copy(&mut source, file).map(|_| ()))?;
+            storage::atomic_write(target, |file| io::copy(&mut source, file).map(|_| ()))?;
+            let _ = std::fs::remove_file(stale);
+            let _ = ext;
             return Ok(true);
         }
     }
+    // Remove stale SyncTeX files if this build produced none.
+    let _ = std::fs::remove_file(&gz_target);
+    let _ = std::fs::remove_file(&plain_target);
     Ok(false)
 }

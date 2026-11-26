@@ -20,6 +20,9 @@
           secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize", "maxEdges", "htmlLabels"],
         });
         return window.mermaid;
+      }).catch((err) => {
+        library = null;
+        throw err;
       });
     }
     return library;

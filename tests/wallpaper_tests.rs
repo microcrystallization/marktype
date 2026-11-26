@@ -90,7 +90,12 @@ fn wallpaper_tinting_preserves_wcag_contrast_in_all_modes() {
         for light in [false, true] {
             for color in test_colors {
                 let tinted = Palette::base(preset, light).tinted(color);
-                for surface in [tinted.shell, tinted.editor_bg, tinted.preview_bg] {
+                for surface in [
+                    tinted.shell,
+                    tinted.editor_bg,
+                    tinted.preview_bg,
+                    tinted.code_bg,
+                ] {
                     let s_rgb = fx::pack(surface);
                     assert!(
                         fx::contrast_ratio(fx::pack(tinted.text), s_rgb) >= TEXT_CONTRAST - 0.05
@@ -105,4 +110,11 @@ fn wallpaper_tinting_preserves_wcag_contrast_in_all_modes() {
             }
         }
     }
+}
+
+#[test]
+fn fx_render_guards_against_u32_dimension_overflow() {
+    let input = vec![128u8; 16];
+    let out = fx::render(input.clone(), 65_536, 16_384, Effect::Halftone, false);
+    assert_eq!(out, input);
 }

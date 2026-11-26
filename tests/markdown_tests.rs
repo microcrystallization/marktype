@@ -139,3 +139,35 @@ fn only_registered_images_in_the_document_folder_are_served() {
     let exported = marktype::assets::export_html_template("Images", &html, false);
     assert!(exported.contains("src=\"data:image/jpeg;base64,"));
 }
+
+#[test]
+fn blocks_whitespace_padded_protocol_relative_links_and_avoids_quadratic_backtracking() {
+    let mut doc = Document::new(
+        "d-safe".into(),
+        "safe.md".into(),
+        None,
+        "[bad](< //evil.example/path>)\n",
+    );
+    let html = doc.render_full_html();
+    assert!(
+        !html.contains("href=\" //evil.example/path\""),
+        "whitespace-padded protocol-relative link should be blocked: {html}"
+    );
+
+    // Unclosed delimiters must finish quickly in linear time.
+    let stress = format!(
+        "{}\n{}\n{}\n",
+        "`a ".repeat(4000),
+        "\\(x ".repeat(4000),
+        "a == b\n".repeat(4000)
+    );
+    let t0 = std::time::Instant::now();
+    let mut stress_doc = Document::new("d-stress".into(), "stress.md".into(), None, &stress);
+    let rendered = stress_doc.render_full_html();
+    assert!(!rendered.is_empty());
+    assert!(
+        t0.elapsed().as_secs_f64() < 2.0,
+        "preprocess_block took too long: {:?}",
+        t0.elapsed()
+    );
+}

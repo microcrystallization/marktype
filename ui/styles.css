@@ -956,7 +956,7 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
   gap: 8px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--hairline);
-  background: var(--surface);
+  background: var(--shell-panel);
   flex-wrap: wrap;
 }
 .pdf-nav, .pdf-zoom, .pdf-actions {
@@ -987,6 +987,7 @@ body.native-chrome :is(.resize-handle, .win-controls, .win-ctrl-sep) {
   border-bottom: 1px solid var(--hairline);
 }
 .pdf-viewport {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;

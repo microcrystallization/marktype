@@ -144,6 +144,43 @@ struct Meta {
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 const PNG_IEND: [u8; 12] = [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82];
 
+pub(crate) fn read_limited(source: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file =
+        std::fs::File::open(source).map_err(|e| format!("Cannot read the wallpaper: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("Cannot inspect the wallpaper: {e}"))?;
+    if !meta.is_file() {
+        return Err("Wallpaper path is not a regular file".into());
+    }
+    if meta.len() > MAX_SOURCE_BYTES {
+        return Err("Wallpaper file exceeds the 32 MiB limit".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read the wallpaper: {e}"))?;
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return Err("Wallpaper file exceeds the 32 MiB limit".into());
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn decode_limited(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Cannot identify wallpaper format: {e}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|e| format!("Cannot decode the wallpaper: {e}"))
+}
+
 fn png_complete(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -194,9 +231,8 @@ pub fn prepare(
             backdrop: meta.backdrop,
         });
     }
-    let bytes = std::fs::read(source).map_err(|e| format!("Cannot read the wallpaper: {e}"))?;
-    let decoded =
-        image::load_from_memory(&bytes).map_err(|e| format!("Cannot decode the wallpaper: {e}"))?;
+    let bytes = read_limited(source)?;
+    let decoded = decode_limited(&bytes)?;
     drop(bytes);
     let decoded = if decoded.width() > MAX_EDGE || decoded.height() > MAX_EDGE {
         decoded.thumbnail(MAX_EDGE, MAX_EDGE)

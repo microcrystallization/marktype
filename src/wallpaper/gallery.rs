@@ -96,17 +96,23 @@ pub fn thumbnail(
         return Ok(path);
     }
     let bytes = load()?;
-    let full =
-        image::load_from_memory(&bytes).map_err(|e| format!("Cannot decode wallpaper: {e}"))?;
+    let full = super::store::decode_limited(&bytes)?;
     let thumb = DynamicImage::ImageRgb8(
         full.resize_to_fill(THUMB_W, THUMB_H, FilterType::Triangle)
             .to_rgb8(),
     );
     let dir = thumb_dir(config);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create {dir:?}: {e}"))?;
-    thumb
-        .save_with_format(&path, ImageFormat::Jpeg)
+    let mut temp = tempfile::Builder::new()
+        .prefix(".thumb-")
+        .suffix(".jpg")
+        .tempfile_in(&dir)
         .map_err(|e| format!("Cannot save thumbnail: {e}"))?;
+    thumb
+        .write_to(temp.as_file_mut(), ImageFormat::Jpeg)
+        .map_err(|e| format!("Cannot save thumbnail: {e}"))?;
+    temp.persist(&path)
+        .map_err(|e| format!("Cannot save thumbnail: {}", e.error))?;
     Ok(path)
 }
 
@@ -124,6 +130,6 @@ pub fn file_thumbnail(config: &Path, source: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("Cannot read image: {e}"))?
         .len();
     thumbnail(config, &source.to_string_lossy(), len, || {
-        std::fs::read(source).map_err(|e| format!("Cannot read image: {e}"))
+        super::store::read_limited(source)
     })
 }

@@ -37,6 +37,7 @@ pub(crate) fn pandoc() -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name))
         .find_map(|path| dunce::canonicalize(path).ok().filter(|path| path.is_file()))
 }

@@ -1198,23 +1198,27 @@
     if (!image) return;
     event.preventDefault();
     event.stopPropagation();
-    if (!state.doc || state.pendingSourceEdit || state.sourceRequest) return;
+    if (!state.doc || state.pendingSourceEdit || state.sourceRequest || state.pendingEdits) return;
     if (image.size > 32 * 1024 * 1024) {
       showToast("Clipboard image exceeds 32 MiB");
       return;
     }
     const { from, to } = state.editor.selection;
-    const paste = { doc: state.doc, id: state.activeTabId, request: ++requestSequence, from, to };
+    const paste = { doc: state.doc, id: state.activeTabId, request: ++requestSequence, from, to, timer: null };
     imagePaste = paste;
     state.pendingSourceEdit = true;
     setSourceReadOnly(true);
-    const reader = new FileReader();
-    reader.onerror = () => {
-      if (imagePaste !== paste || state.doc !== paste.doc) return;
+    const failPaste = (message) => {
+      if (imagePaste !== paste) return;
+      clearTimeout(paste.timer);
       imagePaste = null;
-      endSourceAction();
-      showToast("Cannot read clipboard image");
+      if (state.doc === paste.doc) endSourceAction();
+      if (message) showToast(message);
     };
+    paste.timer = setTimeout(() => failPaste("Timed out saving clipboard image"), 15000);
+    const reader = new FileReader();
+    reader.onerror = () => failPaste("Cannot read clipboard image");
+    reader.onabort = () => failPaste();
     reader.onload = () => {
       if (imagePaste !== paste || state.doc !== paste.doc) return;
       const data = String(reader.result);
@@ -1531,12 +1535,38 @@
   let pdfState = { loaded: false, path: null, hasSyncTex: false };
   let pendingForwardSync = null;
 
+  function normDir(filePath) {
+    if (!filePath) return "";
+    const norm = filePath.replaceAll("\\", "/");
+    const idx = norm.lastIndexOf("/");
+    const dir = idx >= 0 ? norm.slice(0, idx + 1) : "";
+    return state.platform === "windows" ? dir.toLowerCase() : dir;
+  }
+
+  function activeDocMatchesPdf(pdfPath) {
+    if (!pdfPath || !state.doc?.path) return false;
+    const docNorm = state.platform === "windows"
+      ? state.doc.path.replaceAll("\\", "/").toLowerCase()
+      : state.doc.path.replaceAll("\\", "/");
+    const dir = normDir(pdfPath);
+    return Boolean(dir) && docNorm.startsWith(dir);
+  }
+
   function syncPdfPaneVisibility() {
+    if (!state.doc) {
+      if (pdfPaneOpen || pdfState.loaded) closeBuiltInPdf();
+      return;
+    }
+    if (state.doc.texSource && pdfState.path && !activeDocMatchesPdf(pdfState.path)) {
+      closeBuiltInPdf();
+      return;
+    }
     const show = Boolean(state.doc?.texSource) && pdfPaneOpen;
     elPanesWrap.classList.toggle("tex-pdf-open", show);
     elPdfPane.classList.toggle("hidden", !show);
     $("btn-tex-pdf").classList.toggle("active", show);
-    const canSync = Boolean(state.doc?.texSource) && (pdfState.hasSyncTex || latexHasSyncTex);
+    const matchingOutput = activeDocMatchesPdf(latexOutput) && latexHasSyncTex;
+    const canSync = Boolean(state.doc?.texSource) && (pdfState.hasSyncTex || matchingOutput);
     $("btn-tex-sync").disabled = !canSync;
     $("pdf-sync-forward").disabled = !pdfState.hasSyncTex;
   }
@@ -1569,18 +1599,29 @@
   }
 
   function closeBuiltInPdf() {
+    pendingForwardSync = null;
     pdfPaneOpen = false;
-    syncPdfPaneVisibility();
+    pdfViewer.close();
+    elPanesWrap.classList.remove("tex-pdf-open");
+    elPdfPane.classList.add("hidden");
+    $("btn-tex-pdf").classList.remove("active");
+    $("pdf-sync-forward").disabled = true;
+    const matchingOutput = Boolean(state.doc?.texSource) && activeDocMatchesPdf(latexOutput) && latexHasSyncTex;
+    $("btn-tex-sync").disabled = !matchingOutput;
   }
 
   function triggerForwardSync() {
     if (!state.doc?.texSource) return;
-    const pdf = pdfState.path || latexOutput || undefined;
-    const main = latexMain.value || latexRoots.get(state.doc.path || "") || undefined;
+    const activePdf = activeDocMatchesPdf(pdfState.path)
+      ? pdfState.path
+      : activeDocMatchesPdf(latexOutput)
+        ? latexOutput
+        : undefined;
+    const knownMain = latexRoots.get(state.doc.path || "") || undefined;
     send({
       cmd: "synctexForward",
-      pdf,
-      main,
+      pdf: activePdf,
+      main: knownMain,
       file: state.doc.path || undefined,
       line: (state.activeLine || 0) + 1,
     });
@@ -1625,13 +1666,20 @@
       closeBuiltInPdf();
       return;
     }
-    const main = latexMain.value || latexRoots.get(state.doc?.path || "") || undefined;
-    send({ cmd: "openPdfPreview", main, pdf: latexOutput || undefined });
+    const knownMain = latexRoots.get(state.doc?.path || "") || undefined;
+    const activePdf = activeDocMatchesPdf(latexOutput) ? latexOutput : undefined;
+    send({ cmd: "openPdfPreview", main: knownMain, pdf: activePdf });
   };
   $("btn-tex-sync").onclick = triggerForwardSync;
   $("pdf-prev").onclick = () => pdfViewer.prevPage();
   $("pdf-next").onclick = () => pdfViewer.nextPage();
   $("pdf-page-input").addEventListener("change", () => pdfViewer.goToPage($("pdf-page-input").value));
+  $("pdf-page-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      pdfViewer.goToPage($("pdf-page-input").value);
+    }
+  });
   $("pdf-zoom-in").onclick = () => pdfViewer.zoomIn();
   $("pdf-zoom-out").onclick = () => pdfViewer.zoomOut();
   $("pdf-fit").onclick = () => pdfViewer.fitWidth();
@@ -2012,7 +2060,15 @@
   // ===== Global Keyboard Shortcuts =====
   window.addEventListener("keydown", (e) => {
     if (e.isComposing || e.defaultPrevented || elCloseDialog.open) return;
+    const openDialog = document.querySelector("dialog[open]");
     const mod = e.ctrlKey || e.metaKey;
+    if (openDialog) {
+      if (openDialog === latexDialog && mod && e.key.toLowerCase() === "enter") {
+        e.preventDefault();
+        $("latex-build").click();
+      }
+      return;
+    }
 
     if (e.key === "Escape") {
       const menu = menus.find((item) => item.open);
@@ -2062,18 +2118,20 @@
       send({ cmd: "updateSettings", patch: { viewMode: target } });
     }
     else if (k === "l" && e.shiftKey) { e.preventDefault(); $("btn-sidebar").click(); }
-    else if (k === "b") { e.preventDefault(); applyFormat("bold"); }
-    else if (k === "i") { e.preventDefault(); applyFormat("italic"); }
-    else if (k === "k" && e.shiftKey) { e.preventDefault(); applyFormat("code-block"); }
-    else if (k === "k") { e.preventDefault(); applyFormat("link"); }
-    else if (k === "`") { e.preventDefault(); applyFormat("code"); }
-    else if (k === "m" && e.shiftKey) { e.preventDefault(); applyFormat("math-block"); }
-    else if (k === "m") { e.preventDefault(); applyFormat("math-inline"); }
-    else if (k === "t") { e.preventDefault(); applyFormat("table"); }
-    else if (k >= "1" && k <= "6") { e.preventDefault(); applyFormat("h" + k); }
     else if (k === "=" || k === "+") { e.preventDefault(); $("font-plus").click(); }
     else if (k === "-") { e.preventDefault(); $("font-minus").click(); }
     else if (k === "0") { e.preventDefault(); $("font-reset").click(); }
+    else if (elEditorHost.contains(document.activeElement)) {
+      if (k === "b") { e.preventDefault(); applyFormat("bold"); }
+      else if (k === "i") { e.preventDefault(); applyFormat("italic"); }
+      else if (k === "k" && e.shiftKey) { e.preventDefault(); applyFormat("code-block"); }
+      else if (k === "k") { e.preventDefault(); applyFormat("link"); }
+      else if (k === "`") { e.preventDefault(); applyFormat("code"); }
+      else if (k === "m" && e.shiftKey) { e.preventDefault(); applyFormat("math-block"); }
+      else if (k === "m") { e.preventDefault(); applyFormat("math-inline"); }
+      else if (k === "t") { e.preventDefault(); applyFormat("table"); }
+      else if (k >= "1" && k <= "6") { e.preventDefault(); applyFormat("h" + k); }
+    }
   });
 
   // ===== Rust -> WebView Event Receiver =====
@@ -2128,8 +2186,11 @@
 
       case "resyncSource":
         if (msg.docId === state.activeTabId) {
+          const hadPending = state.pendingEdits > 0;
+          state.pendingEdits = 0;
           endSourceAction();
           invalidateSearch();
+          if (hadPending) requestSourceWindow(state.windowStartLine);
         }
         break;
 
@@ -2293,14 +2354,21 @@
       case "clipboardImageSaved": {
         const paste = imagePaste;
         if (!paste || paste.request !== msg.request || paste.id !== msg.docId) break;
+        clearTimeout(paste.timer);
         imagePaste = null;
         applyTabSummaries(msg.tabs);
         if (state.doc !== paste.doc) break;
         endSourceAction();
         if (msg.error) showToast(msg.error);
         if (!msg.path) break;
-        const markdown = `![](${msg.path})`;
-        state.editor?.replace(paste.from, paste.to, markdown);
+        const encodedPath = msg.path.replaceAll("\\", "/").split("/").map(encodeURIComponent).join("/");
+        const markdown = `![](<${encodedPath}>)`;
+        if (state.editor) {
+          const maxLen = state.editor.text.length;
+          const from = Math.max(0, Math.min(paste.from, maxLen));
+          const to = Math.max(from, Math.min(paste.to, maxLen));
+          state.editor.replace(from, to, markdown);
+        }
         break;
       }
 
@@ -2331,13 +2399,15 @@
         if (msg.tabs) applyTabSummaries(msg.tabs);
         latexBuilding = false;
         latexLastMain = msg.result?.main;
-        latexOutput = msg.result?.pdf;
-        latexPdfUrl = msg.pdfUrl || null;
-        latexHasSyncTex = Boolean(msg.hasSyncTex);
+        if (msg.result?.pdf) {
+          latexOutput = msg.result.pdf;
+          latexPdfUrl = msg.pdfUrl || null;
+          latexHasSyncTex = Boolean(msg.hasSyncTex);
+        }
         latexStatus.textContent = msg.error || msg.result?.error || t("latexReady", { path: latexOutput });
         setLatexLog(msg.result?.log || msg.log);
         refreshLatexControls();
-        if (latexPdfUrl && latexOutput && state.doc?.texSource) {
+        if (msg.result?.pdf && latexPdfUrl && state.doc?.texSource && activeDocMatchesPdf(latexOutput)) {
           openBuiltInPdf(latexPdfUrl, {
             path: latexOutput,
             hasSyncTex: latexHasSyncTex,
@@ -2361,6 +2431,7 @@
         break;
 
       case "pdfError":
+        pendingForwardSync = null;
         showToast(msg.message || "Cannot open PDF");
         break;
 

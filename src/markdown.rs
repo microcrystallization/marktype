@@ -118,6 +118,10 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
     let bytes = src.as_bytes();
     let len = bytes.len();
     let mut i = 0;
+    let mut no_close_bracket = false;
+    let mut no_close_paren = false;
+    let mut no_close_double_dollar = false;
+    let mut unclosed_ticks = std::collections::HashSet::new();
 
     while i < len {
         // 1. Respect fenced code blocks untouched
@@ -167,19 +171,24 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
             }
             i += ticks;
             let mut closed = false;
-            while i < len {
-                if bytes[i] == b'`' {
-                    let mut t2 = 0;
-                    while i + t2 < len && bytes[i + t2] == b'`' {
-                        t2 += 1;
+            if !unclosed_ticks.contains(&ticks) {
+                while i < len {
+                    if bytes[i] == b'`' {
+                        let mut t2 = 0;
+                        while i + t2 < len && bytes[i + t2] == b'`' {
+                            t2 += 1;
+                        }
+                        i += t2;
+                        if t2 == ticks {
+                            closed = true;
+                            break;
+                        }
+                    } else {
+                        i += 1;
                     }
-                    i += t2;
-                    if t2 == ticks {
-                        closed = true;
-                        break;
-                    }
-                } else {
-                    i += 1;
+                }
+                if !closed {
+                    unclosed_ticks.insert(ticks);
                 }
             }
             if !closed {
@@ -197,7 +206,7 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
         }
 
         // 4. Display math $$ ... $$
-        if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'$' {
+        if !no_close_double_dollar && bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'$' {
             let body_start = i + 2;
             if let Some(rel_end) = find_unescaped_double_dollar(&src[body_start..]) {
                 let tex = src[body_start..body_start + rel_end].trim();
@@ -222,10 +231,11 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
                 i = body_start + rel_end + 2;
                 continue;
             }
+            no_close_double_dollar = true;
         }
 
         // 5. Display math \[ ... \]
-        if bytes[i] == b'\\' && i + 1 < len && bytes[i + 1] == b'[' {
+        if !no_close_bracket && bytes[i] == b'\\' && i + 1 < len && bytes[i + 1] == b'[' {
             let body_start = i + 2;
             if let Some(rel_end) = src[body_start..].find("\\]") {
                 let tex = src[body_start..body_start + rel_end].trim();
@@ -250,10 +260,11 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
                 i = body_start + rel_end + 2;
                 continue;
             }
+            no_close_bracket = true;
         }
 
         // 6. Inline math \( ... \)
-        if bytes[i] == b'\\' && i + 1 < len && bytes[i + 1] == b'(' {
+        if !no_close_paren && bytes[i] == b'\\' && i + 1 < len && bytes[i + 1] == b'(' {
             let body_start = i + 2;
             if let Some(rel_end) = src[body_start..].find("\\)") {
                 let tex = src[body_start..body_start + rel_end].trim();
@@ -278,6 +289,7 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
                 i = body_start + rel_end + 2;
                 continue;
             }
+            no_close_paren = true;
         }
 
         // 7. Inline math $ ... $ (single line, non-empty, not currency like "$ 5")
@@ -308,12 +320,15 @@ fn preprocess_block(src: &str) -> (String, Vec<ProtectedSpan>, Vec<(usize, usize
             }
         }
 
-        // 8. Typora highlight ==text==
+        // 8. Typora highlight ==text== (single line)
         if bytes[i] == b'=' && i + 1 < len && bytes[i + 1] == b'=' {
             let body_start = i + 2;
-            if let Some(rel_end) = src[body_start..].find("==") {
+            let line_end = src[body_start..]
+                .find('\n')
+                .map_or(len, |rel| body_start + rel);
+            if let Some(rel_end) = src[body_start..line_end].find("==") {
                 let inner = &src[body_start..body_start + rel_end];
-                if !inner.is_empty() && !inner.contains('\n') {
+                if !inner.is_empty() {
                     let ph = format!("{prefix}{}END", spans.len());
                     let html = format!("<mark>{}</mark>", escape_html_string(inner));
                     spans.push(ProtectedSpan {
@@ -435,18 +450,20 @@ fn find_delim_no_space(s: &str, delim: u8) -> Option<usize> {
 }
 
 pub fn is_external_link(dest: &str) -> bool {
-    let lower = dest.to_ascii_lowercase();
-    !dest.chars().any(char::is_control)
+    let trimmed = dest.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    !trimmed.chars().any(char::is_control)
         && ["https://", "http://", "mailto:"]
             .iter()
             .any(|scheme| lower.starts_with(scheme))
 }
 
 fn safe_link(dest: &str) -> bool {
-    is_external_link(dest)
-        || (!dest.chars().any(char::is_control)
-            && !dest.contains([':', '\\'])
-            && !dest.starts_with("//"))
+    let trimmed = dest.trim();
+    is_external_link(trimmed)
+        || (!trimmed.chars().any(char::is_control)
+            && !trimmed.contains([':', '\\'])
+            && !trimmed.starts_with("//"))
 }
 
 fn render_raw_html(raw: &str, target: &mut String) {

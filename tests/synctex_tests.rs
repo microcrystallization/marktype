@@ -114,4 +114,54 @@ fn parses_uncompressed_synctex_and_registers_local_pdf_url() {
     assert_eq!(status, 200);
     assert_eq!(mime, "application/pdf");
     assert!(body.starts_with(b"%PDF-"));
+    assert!(marktype::assets::is_registered_pdf(&pdf));
+}
+
+#[test]
+fn parses_lazy_input_inside_content_and_prefers_project_source_over_external_cls() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("paper");
+    let external = temp.path().join("texmf");
+    fs::create_dir_all(project.join("chapters")).unwrap();
+    fs::create_dir_all(&external).unwrap();
+
+    let chapter = project.join("chapters/ch2.tex");
+    let sys_cls = external.join("article.cls");
+    let pdf = project.join("main.pdf");
+    fs::write(&chapter, "\\section{Chapter Two}\n").unwrap();
+    fs::write(&sys_cls, "% system class\n").unwrap();
+    fs::write(&pdf, b"%PDF-1.7\n").unwrap();
+
+    let data = format!(
+        "SyncTeX Version:1\n\
+         Input:1:{}\n\
+         Output:pdf\n\
+         Magnification:1000\n\
+         Unit:1\n\
+         X Offset:0\n\
+         Y Offset:0\n\
+         Content:\n\
+         {{1\n\
+         Input:2:./chapters/ch2.tex\n\
+         (1,100:4718592,9867264:18000000,786432,196608\n\
+         )\n\
+         (2,7:4718592,9867264:18000000,786432,196608\n\
+         )\n\
+         }}\n\
+         Postamble:\n",
+        sys_cls.display()
+    );
+    fs::write(project.join("main.synctex"), data).unwrap();
+
+    let st = SyncTex::load_for_pdf(&pdf).unwrap();
+    let fwd = st.forward(&chapter, 7).unwrap();
+    assert_eq!(fwd.page, 1);
+
+    // At the exact overlapping coordinates, inverse sync must prefer the project chapter over external article.cls.
+    let inv = st.inverse(1, 100.0, 145.0).unwrap();
+    assert_eq!(
+        dunce::canonicalize(&inv.path).unwrap(),
+        dunce::canonicalize(&chapter).unwrap()
+    );
+    assert_eq!(inv.line, 7);
 }
